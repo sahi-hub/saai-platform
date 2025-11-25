@@ -1,0 +1,11 @@
+{
+  "tenantId": "client1",
+  "displayName": "Client 1 Corporation",
+  "brandColor": "#FF5733",
+  "apiGateway": "https://client1.saai.pro/api",
+  "features": {
+    "recommendation": true,
+    "cart": true,
+    "checkout": true
+  }
+}

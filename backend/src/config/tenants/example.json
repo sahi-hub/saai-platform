@@ -1,0 +1,11 @@
+{
+  "tenantId": "example",
+  "displayName": "Example Tenant",
+  "brandColor": "#4A90E2",
+  "apiGateway": "https://example.com/api",
+  "features": {
+    "recommendation": true,
+    "cart": true,
+    "checkout": false
+  }
+}

@@ -1,0 +1,20 @@
+{
+  "tenantId": "default",
+  "actions": {
+    "search_products": {
+      "enabled": true,
+      "description": "Search products by query text",
+      "handler": "commerce.search"
+    },
+    "add_to_cart": {
+      "enabled": true,
+      "description": "Add a product to cart",
+      "handler": "commerce.addToCart"
+    },
+    "checkout": {
+      "enabled": false,
+      "description": "Create an order from cart",
+      "handler": "commerce.checkout"
+    }
+  }
+}
