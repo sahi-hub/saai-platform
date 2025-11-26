@@ -1,11 +1,15 @@
 {
   "tenantId": "client1",
-  "displayName": "Client 1 Corporation",
-  "brandColor": "#FF5733",
-  "apiGateway": "https://client1.saai.pro/api",
+  "displayName": "client1",
+  "brandColor": "#2E8B57",
+  "accentColor": "#FFFFFF",
+  "logoUrl": "https://play.google.com/store/apps/details?id=in.amityapps.mbiz&hl=en_SG",
+  "welcomeMessage": "Hi, I'm SAAI — your personal Mellbizz assistant!",
   "features": {
-    "recommendation": true,
-    "cart": true,
-    "checkout": true
+    "productSearch": true,
+    "cartControl": true,
+    "orderAssist": true,
+    "recommendations": true,
+    "personalMemory": false
   }
 }

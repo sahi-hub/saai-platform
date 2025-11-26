@@ -7,10 +7,18 @@ import ChatInput from '@/components/ChatInput';
 import { sendChatMessage, ChatResponse } from '@/config/api';
 import { getCurrentTenant } from '@/utils/tenant';
 import { loadTenantTheme, Theme, DEFAULT_THEME } from '@/config/tenant';
+import { ProductItem } from '@/components/ProductCard';
+
+// Support both text messages and recommendation messages
+type MessageContent = 
+  | string 
+  | { type: 'recommendations'; items: ProductItem[]; }
+  | { type: 'outfit'; items: { shirt?: ProductItem; pant?: ProductItem; shoe?: ProductItem; }; };
 
 interface Message {
   id: string;
-  text: string;
+  text?: string; // For backward compatibility
+  content?: MessageContent; // New field for both text and recommendations
   sender: 'user' | 'saai';
   timestamp: string;
   isLoading?: boolean;
@@ -40,7 +48,7 @@ export default function Home() {
         setMessages([
           {
             id: '1',
-            text: `Hello! I'm SAAI, your AI assistant. I'm now connected to the backend and can help you with real actions. Try asking me to search for products, add items to your cart, or get support!`,
+            content: `Hello! I'm SAAI, your AI assistant. I'm now connected to the backend and can help you with real actions. Try asking me to search for products, add items to your cart, get recommendations, or get support!`,
             sender: 'saai',
             timestamp: new Date().toLocaleTimeString('en-US', { 
               hour: '2-digit', 
@@ -126,7 +134,7 @@ export default function Home() {
     // Add user message immediately
     const userMessage: Message = {
       id: Date.now().toString(),
-      text,
+      content: text,
       sender: 'user',
       timestamp: new Date().toLocaleTimeString('en-US', { 
         hour: '2-digit', 
@@ -140,7 +148,7 @@ export default function Home() {
     const loadingId = `loading-${Date.now()}`;
     setMessages((prev) => [...prev, {
       id: loadingId,
-      text: '',
+      content: '',
       sender: 'saai',
       timestamp: '',
       isLoading: true
@@ -154,6 +162,84 @@ export default function Home() {
 
       // Remove loading indicator
       setMessages((prev) => prev.filter(msg => msg.id !== loadingId));
+
+      // Check if this is an outfit response
+      if (response.replyType === 'tool' && 
+          response.actionResult && 
+          response.actionResult.type === 'outfit' &&
+          response.actionResult.items) {
+        
+        // Create outfit message
+        const outfitMessage: Message = {
+          id: (Date.now() + 1).toString(),
+          content: {
+            type: 'outfit',
+            items: response.actionResult.items
+          },
+          sender: 'saai',
+          timestamp: new Date().toLocaleTimeString('en-US', { 
+            hour: '2-digit', 
+            minute: '2-digit' 
+          })
+        };
+
+        setMessages((prev) => [...prev, outfitMessage]);
+
+        // If LLM also provided text, add it as a separate message
+        if (response.llm.text) {
+          const textMessage: Message = {
+            id: (Date.now() + 2).toString(),
+            content: response.llm.text,
+            sender: 'saai',
+            timestamp: new Date().toLocaleTimeString('en-US', { 
+              hour: '2-digit', 
+              minute: '2-digit' 
+            })
+          };
+          setMessages((prev) => [...prev, textMessage]);
+        }
+
+        return;
+      }
+
+      // Check if this is a recommendation response
+      if (response.replyType === 'tool' && 
+          response.actionResult && 
+          response.actionResult.type === 'recommendations' &&
+          Array.isArray(response.actionResult.items)) {
+        
+        // Create recommendation message
+        const recommendationMessage: Message = {
+          id: (Date.now() + 1).toString(),
+          content: {
+            type: 'recommendations',
+            items: response.actionResult.items
+          },
+          sender: 'saai',
+          timestamp: new Date().toLocaleTimeString('en-US', { 
+            hour: '2-digit', 
+            minute: '2-digit' 
+          })
+        };
+
+        setMessages((prev) => [...prev, recommendationMessage]);
+
+        // If LLM also provided text, add it as a separate message
+        if (response.llm.text) {
+          const textMessage: Message = {
+            id: (Date.now() + 2).toString(),
+            content: response.llm.text,
+            sender: 'saai',
+            timestamp: new Date().toLocaleTimeString('en-US', { 
+              hour: '2-digit', 
+              minute: '2-digit' 
+            })
+          };
+          setMessages((prev) => [...prev, textMessage]);
+        }
+
+        return;
+      }
 
       // Determine response text based on replyType
       let responseText = '';
@@ -177,7 +263,7 @@ export default function Home() {
       // Add SAAI response
       const saaiResponse: Message = {
         id: (Date.now() + 1).toString(),
-        text: responseText,
+        content: responseText,
         sender: 'saai',
         timestamp: new Date().toLocaleTimeString('en-US', { 
           hour: '2-digit', 
@@ -199,7 +285,7 @@ export default function Home() {
       // Add error message
       const errorMessage: Message = {
         id: (Date.now() + 2).toString(),
-        text: '⚠️ Connection error. Please check if the backend server is running and try again.',
+        content: '⚠️ Connection error. Please check if the backend server is running and try again.',
         sender: 'saai',
         timestamp: new Date().toLocaleTimeString('en-US', { 
           hour: '2-digit', 
@@ -213,6 +299,22 @@ export default function Home() {
     } finally {
       setIsLoading(false);
     }
+  };
+
+  /**
+   * Handle Add to Cart button click from product cards
+   * Simply sends a message to add the product to cart
+   */
+  const handleAddToCart = (productId: string) => {
+    handleSendMessage(`Add product ${productId} to cart`);
+  };
+
+  /**
+   * Handle Add Multiple to Cart (for outfit "Add Full Outfit" button)
+   * Sends a message to add all products to cart
+   */
+  const handleAddMultipleToCart = (productIds: string[]) => {
+    handleSendMessage(`Add all of these products to my cart: ${productIds.join(', ')}`);
   };
 
   // Show loading indicator while theme is loading
@@ -240,11 +342,13 @@ export default function Home() {
       {messages.map((msg) => (
         <MessageBubble
           key={msg.id}
-          message={msg.text}
+          message={msg.content || msg.text || ''}
           sender={msg.sender}
           timestamp={msg.timestamp}
           isLoading={msg.isLoading}
           theme={theme}
+          onAddToCart={handleAddToCart}
+          onAddMultipleToCart={handleAddMultipleToCart}
         />
       ))}
       {/* Invisible element for auto-scroll */}

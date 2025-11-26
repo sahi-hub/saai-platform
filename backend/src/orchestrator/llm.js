@@ -222,6 +222,48 @@ async function callMockLLM(request) {
 
   // Pattern matching for common intents
   
+  // Outfit recommendation intent (more specific, check first)
+  if ((lowerMessage.includes('outfit') && (lowerMessage.includes('complete') || lowerMessage.includes('full') || lowerMessage.includes('entire'))) ||
+      lowerMessage.includes('dress me') ||
+      lowerMessage.includes('what should i wear') ||
+      lowerMessage.includes('complete look') ||
+      (lowerMessage.includes('eid') && lowerMessage.includes('outfit'))) {
+    
+    if (actionRegistry.recommend_outfit?.enabled) {
+      return {
+        type: 'tool',
+        action: 'recommend_outfit',
+        params: {
+          query: message,
+          preferences: []
+        },
+        reasoning: 'Mock LLM detected outfit recommendation intent'
+      };
+    }
+  }
+  
+  // General recommendation intent
+  if (lowerMessage.includes('recommend') || 
+      lowerMessage.includes('suggest') || 
+      lowerMessage.includes('outfit') ||
+      lowerMessage.includes('idea') ||
+      lowerMessage.includes('eid') ||
+      lowerMessage.includes('style') ||
+      lowerMessage.includes('what to wear')) {
+    
+    if (actionRegistry.recommend_products?.enabled) {
+      return {
+        type: 'tool',
+        action: 'recommend_products',
+        params: {
+          query: message,
+          preferences: []
+        },
+        reasoning: 'Mock LLM detected recommendation intent'
+      };
+    }
+  }
+
   // Search intent
   if (lowerMessage.includes('search') || 
       lowerMessage.includes('find') || 
@@ -542,6 +584,26 @@ function buildToolsFromRegistry(actionRegistry) {
         description: 'Issue description'
       };
       tool.function.parameters.required.push('subject', 'description');
+    }
+    
+    if (actionName.includes('recommend')) {
+      tool.function.parameters.properties.query = {
+        type: 'string',
+        description: 'Recommendation query (e.g., "eid outfit", "formal shoes")'
+      };
+      tool.function.parameters.properties.preferences = {
+        type: 'array',
+        items: {
+          type: 'string'
+        },
+        description: 'User preferences (e.g., colors, styles, categories)',
+        default: []
+      };
+      tool.function.parameters.properties.limit = {
+        type: 'integer',
+        description: 'Maximum number of recommendations to return',
+        default: 10
+      };
     }
     
     tools.push(tool);

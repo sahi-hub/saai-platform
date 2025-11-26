@@ -15,6 +15,16 @@
       "enabled": true,
       "description": "Create an order from cart",
       "handler": "commerce.checkout"
+    },
+    "recommend_products": {
+      "enabled": true,
+      "description": "Recommend products based on query and preferences",
+      "handler": "recommender.recommend"
+    },
+    "recommend_outfit": {
+      "enabled": true,
+      "description": "Recommend a full outfit (shirt + pant + shoe)",
+      "handler": "recommender.outfit"
     }
   }
 }

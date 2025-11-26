@@ -17,6 +17,8 @@
 const path = require('path');
 const fs = require('fs').promises;
 const { logToolExecution } = require('../utils/logger');
+const { recommendProducts } = require('../recommender/recommender');
+const { recommendOutfit } = require('../recommender/outfitRecommender');
 
 /**
  * Custom error for action not found in registry
@@ -208,7 +210,99 @@ async function runAction({ tenantConfig, actionRegistry, action, params = {} }) 
 
   const [namespace, functionName] = handlerParts;
 
-  // 4. Load adapter (tenant-specific or generic)
+  // 4. Handle special namespaces
+  // 4a. Recommender namespace - call recommendation engine directly
+  if (namespace === 'recommender') {
+    console.log(`[tools] Executing recommender action: ${functionName}`);
+    const startTime = Date.now();
+
+    try {
+      // Handle different recommender methods
+      if (functionName === 'outfit') {
+        // Outfit recommendation - returns shirt, pant, shoe
+        const query = params?.query || params?.message || '';
+        const preferences = params?.preferences || [];
+
+        console.log(`[tools] Outfit recommender params:`, { query, preferences });
+
+        // Call outfit recommendation engine
+        const outfitResult = await recommendOutfit(
+          tenantConfig.tenantId || tenantConfig.id || tenantId,
+          query,
+          preferences
+        );
+
+        const executionTime = Date.now() - startTime;
+        console.log(`[tools] Outfit recommendation completed in ${executionTime}ms`);
+
+        // Format result for tool response
+        const enrichedResult = {
+          type: 'outfit',
+          items: outfitResult,
+          _meta: {
+            action,
+            handler,
+            adapterSource: 'outfit-recommender',
+            executionTime,
+            timestamp: new Date().toISOString()
+          }
+        };
+
+        // Log successful tool execution
+        logToolExecution(tenantId, action, params, enrichedResult);
+
+        return enrichedResult;
+      } else {
+        // Product recommendation - returns list of similar products
+        const query = params?.query || params?.message || '';
+        const preferences = params?.preferences || [];
+        const limit = params?.limit || 10;
+        const minScore = params?.minScore || 0.1;
+
+        console.log(`[tools] Product recommender params:`, { query, preferences, limit, minScore });
+
+        // Call recommendation engine
+        const results = await recommendProducts(
+          tenantConfig.tenantId || tenantConfig.id || tenantId,
+          query,
+          preferences,
+          { limit, minScore, includeScores: true }
+        );
+
+        const executionTime = Date.now() - startTime;
+        console.log(`[tools] Product recommendation completed in ${executionTime}ms, ${results.length} products`);
+
+        // Format result for tool response
+        const enrichedResult = {
+          type: 'recommendations',
+          items: results,
+          _meta: {
+            action,
+            handler,
+            adapterSource: 'recommender-engine',
+            executionTime,
+            timestamp: new Date().toISOString()
+          }
+        };
+
+        // Log successful tool execution
+        logToolExecution(tenantId, action, params, enrichedResult);
+
+        return enrichedResult;
+      }
+    } catch (error) {
+      const executionTime = Date.now() - startTime;
+      console.error(`[tools] Recommender action failed after ${executionTime}ms:`, error.message);
+
+      // Re-throw with additional context
+      error.action = action;
+      error.handler = handler;
+      error.executionTime = executionTime;
+      throw error;
+    }
+  }
+
+  // 4b. Load adapter for other namespaces (commerce, settings, etc.)
   const { adapter, source } = await loadAdapter(namespace, functionName, tenantId, action);
 
   // 5. Get function from adapter

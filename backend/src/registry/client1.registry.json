@@ -1,5 +1,5 @@
 {
-  "tenantId": "default",
+  "tenantId": "client1",
   "actions": {
     "search_products": {
       "enabled": true,
@@ -12,7 +12,7 @@
       "handler": "commerce.addToCart"
     },
     "checkout": {
-      "enabled": false,
+      "enabled": true,
       "description": "Create an order from cart",
       "handler": "commerce.checkout"
     },

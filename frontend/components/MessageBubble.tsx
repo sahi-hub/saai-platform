@@ -1,6 +1,9 @@
 'use client';
 
 import React from 'react';
+import ProductListBubble from './ProductListBubble';
+import OutfitBubble from './OutfitBubble';
+import { ProductItem } from './ProductCard';
 
 interface Theme {
   primaryColor: string;
@@ -9,12 +12,26 @@ interface Theme {
   logoUrl: string;
 }
 
+interface OutfitItems {
+  shirt?: ProductItem;
+  pant?: ProductItem;
+  shoe?: ProductItem;
+}
+
+// Support text messages, recommendations, and outfit messages
+type MessageContent = 
+  | string 
+  | { type: 'recommendations'; items: ProductItem[]; }
+  | { type: 'outfit'; items: OutfitItems; };
+
 interface MessageBubbleProps {
-  message: string;
+  message: MessageContent;
   sender: 'user' | 'saai';
   timestamp?: string;
   isLoading?: boolean;
   theme?: Theme;
+  onAddToCart?: (productId: string) => void;
+  onAddMultipleToCart?: (productIds: string[]) => void;
 }
 
 export default function MessageBubble({ 
@@ -22,12 +39,78 @@ export default function MessageBubble({
   sender, 
   timestamp,
   isLoading = false,
-  theme
+  theme,
+  onAddToCart,
+  onAddMultipleToCart
 }: MessageBubbleProps) {
   const isUser = sender === 'user';
   
   // Get SAAI bubble color from theme or use default
   const saaiBackgroundColor = theme?.primaryColor || '#4A90E2';
+
+  // Check message type
+  const isRecommendation = typeof message === 'object' && message.type === 'recommendations';
+  const isOutfit = typeof message === 'object' && message.type === 'outfit';
+
+  // If this is an outfit message, render OutfitBubble
+  if (isOutfit && !isUser) {
+    return (
+      <div className="flex justify-start">
+        <div className="flex flex-col max-w-[90%] sm:max-w-[80%]">
+          {/* Sender Label */}
+          <span className="text-xs font-medium mb-1 px-1 text-left text-slate-600">
+            SAAI
+          </span>
+
+          {/* Outfit Bubble */}
+          <OutfitBubble 
+            items={message.items}
+            theme={theme || { primaryColor: saaiBackgroundColor, secondaryColor: '#FFFFFF', headerTitle: 'SAAI', logoUrl: '' }}
+            onAddSingle={onAddToCart || (() => {})}
+            onAddAll={onAddMultipleToCart || (() => {})}
+          />
+
+          {/* Timestamp */}
+          {timestamp && (
+            <span className="text-[11px] text-slate-400 mt-1 px-1 text-left">
+              {timestamp}
+            </span>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  // If this is a recommendation message, render ProductListBubble
+  if (isRecommendation && !isUser) {
+    return (
+      <div className="flex justify-start">
+        <div className="flex flex-col max-w-[90%] sm:max-w-[80%]">
+          {/* Sender Label */}
+          <span className="text-xs font-medium mb-1 px-1 text-left text-slate-600">
+            SAAI
+          </span>
+
+          {/* Product List */}
+          <ProductListBubble 
+            items={message.items}
+            theme={theme || { primaryColor: saaiBackgroundColor, secondaryColor: '#FFFFFF', headerTitle: 'SAAI', logoUrl: '' }}
+            onAdd={onAddToCart || (() => {})}
+          />
+
+          {/* Timestamp */}
+          {timestamp && (
+            <span className="text-[11px] text-slate-400 mt-1 px-1 text-left">
+              {timestamp}
+            </span>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  // For text messages, extract the string
+  const textMessage = typeof message === 'string' ? message : '';
 
   return (
     <div className={`flex ${isUser ? 'justify-end' : 'justify-start'}`}>
@@ -83,7 +166,7 @@ export default function MessageBubble({
             </div>
           ) : (
             <p className="text-[15px] leading-relaxed whitespace-pre-wrap break-words">
-              {message}
+              {textMessage}
             </p>
           )}
         </div>
