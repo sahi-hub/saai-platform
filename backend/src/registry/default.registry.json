@@ -16,6 +16,11 @@
       "description": "Create an order from cart",
       "handler": "commerce.checkout"
     },
+    "view_cart": {
+      "enabled": true,
+      "description": "View current cart contents and summary",
+      "handler": "commerce.viewCart"
+    },
     "recommend_products": {
       "enabled": true,
       "description": "Recommend products based on query and preferences",

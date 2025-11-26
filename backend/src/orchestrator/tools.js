@@ -19,6 +19,7 @@ const fs = require('fs').promises;
 const { logToolExecution } = require('../utils/logger');
 const { recommendProducts } = require('../recommender/recommender');
 const { recommendOutfit } = require('../recommender/outfitRecommender');
+const { addToCart, viewCart, checkoutCart } = require('../commerce/cartService');
 
 /**
  * Custom error for action not found in registry
@@ -302,7 +303,71 @@ async function runAction({ tenantConfig, actionRegistry, action, params = {} }) 
     }
   }
 
-  // 4b. Load adapter for other namespaces (commerce, settings, etc.)
+  // 4b. Commerce namespace - cart and checkout operations
+  if (namespace === 'commerce') {
+    console.log(`[tools] Executing commerce action: ${functionName}`);
+    const startTime = Date.now();
+    const sessionId = params?.sessionId || params?.userId || null;
+
+    try {
+      let result;
+
+      if (functionName === 'addToCart') {
+        result = await addToCart({
+          tenantConfig,
+          sessionId,
+          productId: params?.productId,
+          quantity: params?.quantity || 1
+        });
+      } else if (functionName === 'viewCart') {
+        result = await viewCart({
+          tenantConfig,
+          sessionId
+        });
+      } else if (functionName === 'checkout') {
+        result = await checkoutCart({
+          tenantConfig,
+          sessionId,
+          paymentMethod: params?.paymentMethod || 'COD'
+        });
+      } else {
+        // Fall through to adapter loading for other commerce functions (like search)
+        console.log(`[tools] Commerce function ${functionName} not handled directly, falling through to adapter`);
+      }
+
+      if (result) {
+        const executionTime = Date.now() - startTime;
+        console.log(`[tools] Commerce action completed in ${executionTime}ms`);
+
+        // Add metadata to result
+        const enrichedResult = {
+          ...result,
+          _meta: {
+            action,
+            handler,
+            adapterSource: 'cart-service',
+            executionTime,
+            timestamp: new Date().toISOString()
+          }
+        };
+
+        // Log successful tool execution
+        logToolExecution(tenantId, action, params, enrichedResult);
+
+        return enrichedResult;
+      }
+    } catch (error) {
+      const executionTime = Date.now() - startTime;
+      console.error(`[tools] Commerce action failed after ${executionTime}ms:`, error.message);
+
+      error.action = action;
+      error.handler = handler;
+      error.executionTime = executionTime;
+      throw error;
+    }
+  }
+
+  // 4c. Load adapter for other namespaces (commerce.search, settings, etc.)
   const { adapter, source } = await loadAdapter(namespace, functionName, tenantId, action);
 
   // 5. Get function from adapter

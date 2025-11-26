@@ -292,6 +292,64 @@ export default function Home() {
         return;
       }
 
+      // Check if this is a cart action response (add_to_cart, view_cart)
+      if (response.replyType === 'tool' && 
+          response.actionResult?.type === 'cart') {
+        
+        // Use the message from actionResult, or build from summary
+        let cartText = response.actionResult.message as string;
+        
+        if (!cartText && response.actionResult.summary) {
+          const summary = response.actionResult.summary as { totalItems?: number; totalAmount?: number };
+          cartText = `Your cart has ${summary.totalItems || 0} item(s), total: ₹${summary.totalAmount || 0}`;
+        }
+        
+        if (!cartText) {
+          cartText = response.actionResult.success 
+            ? '🛒 Cart updated successfully!' 
+            : '⚠️ Failed to update cart.';
+        }
+
+        const saaiResponse: Message = {
+          id: (Date.now() + 1).toString(),
+          content: cartText,
+          sender: 'saai',
+          timestamp: new Date().toLocaleTimeString('en-US', { 
+            hour: '2-digit', 
+            minute: '2-digit' 
+          })
+        };
+
+        setMessages((prev) => [...prev, saaiResponse]);
+        return;
+      }
+
+      // Check if this is a checkout response
+      if (response.replyType === 'tool' && 
+          response.actionResult?.type === 'checkout') {
+        
+        let checkoutText = response.actionResult.message as string;
+        
+        if (!checkoutText) {
+          checkoutText = response.actionResult.success
+            ? '🎉 Order placed successfully!'
+            : '⚠️ Checkout failed. Your cart might be empty.';
+        }
+
+        const saaiResponse: Message = {
+          id: (Date.now() + 1).toString(),
+          content: checkoutText,
+          sender: 'saai',
+          timestamp: new Date().toLocaleTimeString('en-US', { 
+            hour: '2-digit', 
+            minute: '2-digit' 
+          })
+        };
+
+        setMessages((prev) => [...prev, saaiResponse]);
+        return;
+      }
+
       // Determine response text based on replyType
       let responseText = '';
       

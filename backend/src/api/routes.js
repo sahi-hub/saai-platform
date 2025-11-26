@@ -12,6 +12,11 @@ const {
   getSimilarProductsController, 
   getPersonalizedController 
 } = require('./recommend.controller');
+const { 
+  getCart, 
+  addToCartEndpoint, 
+  checkoutCartEndpoint 
+} = require('./cart.controller');
 
 const router = express.Router();
 
@@ -66,5 +71,30 @@ router.post('/recommend/:tenantId', recommendController);
 router.get('/recommend/:tenantId', recommendController);
 router.get('/recommend/:tenantId/similar/:productId', getSimilarProductsController);
 router.post('/recommend/:tenantId/personalized', getPersonalizedController);
+
+/**
+ * Cart endpoints (debug/prototype)
+ * GET /cart/:tenantId - View cart contents
+ * POST /cart/:tenantId/add - Add product to cart
+ * POST /cart/:tenantId/checkout - Checkout and create order
+ * 
+ * These are for manual testing via curl.
+ * In production, cart operations go through /chat as tool calls.
+ * 
+ * Query params for GET:
+ * - session: Session ID (optional)
+ * 
+ * Body for POST /add:
+ * - productId: Product ID to add
+ * - quantity: Quantity (optional)
+ * - sessionId: Session ID (optional)
+ * 
+ * Body for POST /checkout:
+ * - sessionId: Session ID (optional)
+ * - paymentMethod: Payment method (optional, default COD)
+ */
+router.get('/cart/:tenantId', getCart);
+router.post('/cart/:tenantId/add', addToCartEndpoint);
+router.post('/cart/:tenantId/checkout', checkoutCartEndpoint);
 
 module.exports = router;

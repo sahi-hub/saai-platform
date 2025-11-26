@@ -76,6 +76,30 @@ const toolDefinitions = [
       },
       required: ["productId"]
     }
+  },
+  {
+    name: "view_cart",
+    description: "View the current contents of the user's shopping cart. Use this when the user asks to see their cart, check what's in their cart, or view cart contents.",
+    parameters: {
+      type: "object",
+      properties: {},
+      required: []
+    }
+  },
+  {
+    name: "checkout",
+    description: "Complete the purchase and create an order for items in the cart. Use this when the user wants to checkout, place an order, complete their purchase, or proceed to payment.",
+    parameters: {
+      type: "object",
+      properties: {
+        paymentMethod: {
+          type: "string",
+          description: "Payment method. Defaults to 'COD' (Cash on Delivery).",
+          default: "COD"
+        }
+      },
+      required: []
+    }
   }
 ];
 
