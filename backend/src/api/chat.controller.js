@@ -12,6 +12,7 @@
 const { runLLMOrchestrator } = require('../orchestrator/llm');
 const { getEffectiveTenant } = require('../utils/tenantLoader');
 const { loadActionRegistry } = require('../utils/registryLoader');
+const { addLog } = require('../debug/logger');
 
 /**
  * Handle chat request
@@ -82,8 +83,24 @@ async function handleChat(req, res) {
 
     console.log(`[Chat] Result type: ${result.type}`);
 
+    // Base log entry
+    const baseLog = {
+      tenantId: tenantConfig?._effectiveId || tenant || 'unknown',
+      sessionId: sessionId || null,
+      userMessage: message,
+      replyType: result.type
+    };
+
     // Format response based on result type
     if (result.type === 'message') {
+      // Log message-only response
+      addLog({
+        ...baseLog,
+        llmProvider: result.provider,
+        llmModel: result.model,
+        llmText: result.text
+      });
+
       // Pure conversational response (no tool used)
       return res.status(200).json({
         success: true,
@@ -102,6 +119,42 @@ async function handleChat(req, res) {
     }
 
     if (result.type === 'tool_result') {
+      // Build tool result summary for logging
+      const toolResult = result.toolResult || {};
+      const summary = {};
+
+      if (toolResult.type === 'outfit') {
+        const items = toolResult.items || {};
+        summary.outfitItems = Object.keys(items);
+      }
+
+      if (toolResult.type === 'recommendations') {
+        const items = toolResult.items || toolResult.recommendations || [];
+        summary.recommendationCount = Array.isArray(items) ? items.length : 0;
+      }
+
+      if (toolResult.type === 'cart') {
+        summary.cartAction = toolResult.action;
+        summary.cartTotalItems = toolResult.summary?.totalItems;
+        summary.cartTotalAmount = toolResult.summary?.totalAmount;
+      }
+
+      if (toolResult.type === 'checkout') {
+        summary.checkoutSuccess = toolResult.success;
+        summary.orderId = toolResult.order?.orderId;
+      }
+
+      // Log tool result
+      addLog({
+        ...baseLog,
+        llmProvider: result.provider,
+        llmModel: result.model,
+        toolAction: result.action,
+        groundedText: result.groundedText || null,
+        toolResultType: toolResult.type,
+        toolSummary: summary
+      });
+
       // Tool was called - include both results and grounded explanation
       return res.status(200).json({
         success: true,
@@ -130,6 +183,15 @@ async function handleChat(req, res) {
 
   } catch (error) {
     console.error('[Chat] Error in handleChat:', error);
+
+    // Log the error
+    addLog({
+      tenantId: req.body?.tenant || 'unknown',
+      sessionId: req.body?.sessionId || null,
+      userMessage: req.body?.message || null,
+      error: true,
+      errorMessage: error?.message || 'Unknown error in handleChat'
+    });
 
     // CRITICAL: Always return 200 with success: false to prevent UI freezes
     return res.status(200).json({

@@ -17,6 +17,10 @@ const {
   addToCartEndpoint, 
   checkoutCartEndpoint 
 } = require('./cart.controller');
+const { 
+  getDebugLogs, 
+  clearDebugLogs 
+} = require('./debug.controller');
 
 const router = express.Router();
 
@@ -96,5 +100,26 @@ router.post('/recommend/:tenantId/personalized', getPersonalizedController);
 router.get('/cart/:tenantId', getCart);
 router.post('/cart/:tenantId/add', addToCartEndpoint);
 router.post('/cart/:tenantId/checkout', checkoutCartEndpoint);
+
+/**
+ * Debug endpoints
+ * GET /debug/logs - View recent chat logs
+ * POST /debug/logs/clear - Clear all logs
+ * 
+ * Query params for GET:
+ * - tenant: Filter by tenant ID (optional)
+ * - session: Filter by session ID (optional)
+ * - limit: Maximum number of logs (default: 50)
+ * 
+ * Returns structured logs with:
+ * - tenantId, sessionId, userMessage
+ * - replyType (message/tool_result)
+ * - llmProvider, llmModel
+ * - toolAction, toolResultType, toolSummary (for tool calls)
+ * - groundedText (for grounded explanations)
+ * - error, errorMessage (for errors)
+ */
+router.get('/debug/logs', getDebugLogs);
+router.post('/debug/logs/clear', clearDebugLogs);
 
 module.exports = router;
