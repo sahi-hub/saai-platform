@@ -101,7 +101,8 @@ tmp/
 *.db
 *.sqlite
 *.sqlite3
-data/
+# Only ignore root data folder for databases, not backend/src/data
+/data/
 
 # Misc
 # ----

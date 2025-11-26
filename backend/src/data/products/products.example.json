@@ -1,0 +1,27 @@
+{
+  "tenantId": "example",
+  "products": [
+    {
+      "id": "p1",
+      "name": "Slim Fit White Shirt",
+      "category": "shirt",
+      "price": 1499,
+      "currency": "INR",
+      "colors": ["white"],
+      "sizes": ["S", "M", "L", "XL"],
+      "tags": ["casual", "office", "formal", "eid"],
+      "imageUrl": "https://example.com/images/p1.jpg"
+    },
+    {
+      "id": "p2",
+      "name": "Black Chinos",
+      "category": "pant",
+      "price": 1799,
+      "currency": "INR",
+      "colors": ["black"],
+      "sizes": ["M", "L", "XL"],
+      "tags": ["casual", "street", "eid"],
+      "imageUrl": "https://example.com/images/p2.jpg"
+    }
+  ]
+}
