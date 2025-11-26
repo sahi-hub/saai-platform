@@ -1,13 +1,18 @@
 /**
- * Orchestrator Controller
+ * Orchestrator Controller - REFACTORED
  * 
  * Coordinates LLM processing and action execution.
  * This is the main entry point for AI-powered chat interactions.
+ * 
+ * CHANGES:
+ * - Uses getEffectiveTenant for tenant fallback
+ * - Adapted to new runLLM interface (text-only + internal tool planner)
+ * - Enhanced error handling (never crashes)
  */
 
-const tenantLoader = require('../utils/tenantLoader');
+const { getEffectiveTenant } = require('../utils/tenantLoader');
 const registryLoader = require('../utils/registryLoader');
-const { runLLM } = require('./llm');
+const { runLLM, buildSystemPrompt } = require('./llm');
 const { runAction } = require('./tools');
 
 /**
@@ -35,71 +40,96 @@ async function handleLLMChat(requestBody) {
   console.log(`[orchestrator] Processing LLM chat for tenant: ${tenant}`);
   console.log(`[orchestrator] Message: "${message}"`);
 
-  // 1. Load tenant configuration
-  const tenantConfig = await tenantLoader.loadTenantConfig(tenant);
+  // 1. Load tenant configuration with fallback
+  const tenantConfig = await getEffectiveTenant(tenant);
   
-  // 2. Load action registry
-  const actionRegistry = await registryLoader.loadActionRegistry(tenant);
+  // 2. Load action registry (use effective tenant ID)
+  let actionRegistry;
+  try {
+    actionRegistry = await registryLoader.loadActionRegistry(tenantConfig._effectiveId || tenant);
+  } catch (error) {
+    console.warn(`[orchestrator] Failed to load registry for ${tenant}, using empty registry`);
+    actionRegistry = { actions: {} };
+  }
 
-  // 3. Call LLM to process message and decide what to do
-  const llmDecision = await runLLM({
-    message,
-    tenantConfig,
-    actionRegistry: actionRegistry.actions, // Pass the actions object, not the wrapper
-    conversationHistory
+  // 3. Build system prompt from tenant config
+  const systemPrompt = buildSystemPrompt(tenantConfig);
+
+  // 4. Format conversation messages for LLM
+  const messages = [
+    ...conversationHistory.map(msg => ({
+      role: msg.role || 'user',
+      content: msg.content || msg.message || ''
+    })),
+    { role: 'user', content: message }
+  ];
+
+  // 5. Call LLM to process message (text-only, internal tool planning)
+  const llmResult = await runLLM({
+    messages,
+    systemPrompt,
+    actionRegistry: actionRegistry.actions || {},
+    preferredProvider: tenantConfig.settings?.preferredProvider || null
   });
 
-  console.log(`[orchestrator] LLM decision type: ${llmDecision.type}`);
+  console.log(`[orchestrator] LLM result type: ${llmResult.type}`);
 
-  // 4. Handle LLM decision
-  if (llmDecision.type === 'tool') {
-    // LLM wants to execute an action
-    console.log(`[orchestrator] Executing tool: ${llmDecision.action}`);
+  // 6. Handle LLM result
+  if (llmResult.type === 'tool') {
+    // Internal tool planner detected an action intent
+    console.log(`[orchestrator] Executing tool: ${llmResult.action}`);
     
-    const actionResult = await runAction({
-      tenantConfig,
-      actionRegistry, // Pass the full registry object (it will access .actions internally)
-      action: llmDecision.action,
-      params: llmDecision.params || {}
-    });
+    try {
+      const actionResult = await runAction({
+        tenantConfig,
+        actionRegistry,
+        action: llmResult.action,
+        params: llmResult.params || {}
+      });
 
-    return {
-      success: true,
-      replyType: 'tool',
-      llm: {
-        decision: llmDecision.type,
-        action: llmDecision.action,
-        reasoning: llmDecision.reasoning,
-        detectedParams: llmDecision.params,
-        provider: llmDecision.provider,
-        _meta: llmDecision._meta
-      },
-      actionResult,
-      tenantConfig,
-      actionRegistry
-    };
-  } else if (llmDecision.type === 'message') {
-    // LLM wants to respond with text
+      return {
+        success: true,
+        replyType: 'tool',
+        llm: {
+          decision: 'tool',
+          action: llmResult.action,
+          detectedParams: llmResult.params,
+          provider: llmResult.provider,
+          model: llmResult.model,
+          text: llmResult.text
+        },
+        actionResult,
+        tenantConfig: { id: tenantConfig._effectiveId, settings: tenantConfig.settings }
+      };
+    } catch (actionError) {
+      console.error(`[orchestrator] Action execution failed:`, actionError.message);
+      // Return the LLM text as fallback when action fails
+      return {
+        success: true,
+        replyType: 'message',
+        llm: {
+          decision: 'message',
+          provider: llmResult.provider,
+          model: llmResult.model
+        },
+        message: llmResult.text || "I tried to help with that but encountered an issue. Could you try rephrasing your request?",
+        actionError: actionError.message
+      };
+    }
+  } else {
+    // Conversational response (no tool intent detected)
     console.log(`[orchestrator] Returning conversational response`);
     
     return {
       success: true,
       replyType: 'message',
       llm: {
-        decision: llmDecision.type,
-        reasoning: llmDecision.reasoning,
-        response: llmDecision.text,
-        text: llmDecision.text,
-        provider: llmDecision.provider,
-        _meta: llmDecision._meta
+        decision: 'message',
+        provider: llmResult.provider,
+        model: llmResult.model
       },
-      message: llmDecision.text,
-      tenantConfig,
-      actionRegistry
+      message: llmResult.text
     };
-  } else {
-    // Unknown decision type
-    throw new Error(`Unknown LLM decision type: ${llmDecision.type}`);
   }
 }
 
@@ -124,16 +154,22 @@ async function handleDirectAction(requestBody) {
   console.log(`[orchestrator] Processing direct action for tenant: ${tenant}`);
   console.log(`[orchestrator] Action: ${action}`);
 
-  // Load tenant configuration
-  const tenantConfig = await tenantLoader.loadTenantConfig(tenant);
+  // Load tenant configuration with fallback
+  const tenantConfig = await getEffectiveTenant(tenant);
   
   // Load action registry
-  const actionRegistry = await registryLoader.loadActionRegistry(tenant);
+  let actionRegistry;
+  try {
+    actionRegistry = await registryLoader.loadActionRegistry(tenantConfig._effectiveId || tenant);
+  } catch (error) {
+    console.warn(`[orchestrator] Failed to load registry for ${tenant}:`, error.message);
+    actionRegistry = { actions: {} };
+  }
 
   // Execute action directly
   const actionResult = await runAction({
     tenantConfig,
-    actionRegistry, // Pass the full registry object
+    actionRegistry,
     action,
     params: params || {}
   });
@@ -142,8 +178,7 @@ async function handleDirectAction(requestBody) {
     success: true,
     replyType: 'direct_action',
     actionResult,
-    tenantConfig,
-    actionRegistry
+    tenantConfig: { id: tenantConfig._effectiveId, settings: tenantConfig.settings }
   };
 }
 

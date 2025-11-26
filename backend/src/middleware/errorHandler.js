@@ -1,18 +1,19 @@
 /**
- * Global Error Handler Middleware
+ * Global Error Handler Middleware - REFACTORED
  * 
  * Centralized error handling for the SAAI backend.
- * Handles different error types with appropriate HTTP status codes.
  * 
- * Error Categories:
- * - 404: Tenant not found, resource not found
- * - 403: CORS policy violations
- * - 429: Rate limit exceeded
- * - 500: Internal server errors
+ * CRITICAL CHANGE: Always returns HTTP 200 with success: false
+ * This prevents UI freezes and ensures the frontend always gets a valid JSON response.
+ * 
+ * Error types are communicated via the 'type' field in the response body.
  */
 
 /**
  * Global error handler middleware
+ * 
+ * ALWAYS returns HTTP 200 with { success: false, type: string, message: string }
+ * This ensures UI never hangs waiting for a response that won't render properly.
  * 
  * @param {Error} err - The error object
  * @param {Object} req - Express request object
@@ -29,45 +30,89 @@ function errorHandler(err, req, res, next) {
     timestamp: new Date().toISOString()
   });
 
-  // Handle tenant not found errors (404)
-  if (err.message && err.message.includes('Tenant not found')) {
-    return res.status(404).json({
-      success: false,
-      error: 'Tenant not found'
-    });
-  }
-
-  // Handle CORS policy violations (403)
-  if (err.message && err.message.includes('CORS')) {
-    return res.status(403).json({
-      success: false,
-      error: 'CORS policy violation: Origin not allowed'
-    });
-  }
-
-  // Handle rate limit errors (429)
-  if (err.message && err.message.includes('Too many requests')) {
-    return res.status(429).json({
-      success: false,
-      error: 'Too many requests. Please try again later.'
-    });
-  }
-
-  // Handle validation errors (400)
-  if (err.message && (err.message.includes('required') || err.message.includes('invalid'))) {
-    return res.status(400).json({
-      success: false,
-      error: err.message
-    });
-  }
-
-  // Default to 500 Internal Server Error
-  return res.status(500).json({
+  // Build error response - ALWAYS success: false
+  const errorResponse = {
     success: false,
-    error: process.env.NODE_ENV === 'production' 
-      ? 'Server error' 
-      : err.message || 'Server error'
+    message: err.message || 'An unexpected error occurred',
+    type: 'error'
+  };
+
+  // Classify error type for frontend handling
+  if (err.message) {
+    const msg = err.message.toLowerCase();
+    
+    if (msg.includes('tenant not found') || msg.includes('tenant') && msg.includes('not found')) {
+      errorResponse.type = 'tenant_not_found';
+      errorResponse.message = 'The requested tenant could not be found. Using default configuration.';
+    } else if (msg.includes('cors')) {
+      errorResponse.type = 'cors_error';
+      errorResponse.message = 'Cross-origin request blocked. Please check your configuration.';
+    } else if (msg.includes('too many requests') || msg.includes('rate limit')) {
+      errorResponse.type = 'rate_limit';
+      errorResponse.message = 'Too many requests. Please wait a moment and try again.';
+    } else if (msg.includes('required') || msg.includes('invalid') || msg.includes('missing')) {
+      errorResponse.type = 'validation_error';
+    } else if (msg.includes('timeout') || msg.includes('timed out')) {
+      errorResponse.type = 'timeout';
+      errorResponse.message = 'The request took too long. Please try again.';
+    } else if (msg.includes('unauthorized') || msg.includes('authentication')) {
+      errorResponse.type = 'auth_error';
+      errorResponse.message = 'Authentication required.';
+    } else if (msg.includes('forbidden') || msg.includes('permission')) {
+      errorResponse.type = 'permission_error';
+      errorResponse.message = 'You do not have permission to perform this action.';
+    } else {
+      errorResponse.type = 'internal_error';
+      // In production, don't expose internal error details
+      if (process.env.NODE_ENV === 'production') {
+        errorResponse.message = 'Something went wrong. Please try again.';
+      }
+    }
+  }
+
+  // Add debug info in development
+  if (process.env.NODE_ENV === 'development') {
+    errorResponse.debug = {
+      stack: err.stack,
+      path: req.path,
+      method: req.method
+    };
+  }
+
+  // ALWAYS return 200 - frontend handles success: false gracefully
+  return res.status(200).json(errorResponse);
+}
+
+/**
+ * Not Found handler (404 routes)
+ * Also returns 200 with success: false for consistency
+ */
+function notFoundHandler(req, res) {
+  console.warn('Route not found:', {
+    path: req.path,
+    method: req.method,
+    timestamp: new Date().toISOString()
+  });
+
+  return res.status(200).json({
+    success: false,
+    type: 'not_found',
+    message: `Route ${req.method} ${req.path} not found`
   });
 }
 
-module.exports = { errorHandler };
+/**
+ * Async handler wrapper - catches async errors
+ * Wraps async route handlers to ensure errors are passed to errorHandler
+ */
+function asyncHandler(fn) {
+  return (req, res, next) => {
+    Promise.resolve(fn(req, res, next)).catch(next);
+  };
+}
+
+module.exports = { 
+  errorHandler,
+  notFoundHandler,
+  asyncHandler
+};

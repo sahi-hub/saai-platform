@@ -10,17 +10,19 @@ const {
 } = require('../orchestrator/tools');
 
 /**
- * Chat Controller (Thin API Layer)
+ * Chat Controller (Thin API Layer) - REFACTORED
  * 
  * Handles HTTP chat requests and delegates to orchestrator controller.
  * 
- * Architecture (STEP 6):
- * - ✅ Tenant loader: Load tenant-specific configuration
+ * CRITICAL: This controller ALWAYS returns HTTP 200 with { success: true/false }
+ * This prevents UI freezes when errors occur.
+ * 
+ * Architecture:
+ * - ✅ Tenant loader: Load tenant-specific configuration (with fallback)
  * - ✅ Action registry: Load tenant-specific action configurations
- * - ✅ Orchestrator: Coordinate action execution (STEP 5)
- * - ✅ LLM Integration: Process messages with mock LLM (STEP 6)
- * - TODO: Memory: Manage conversation history (STEP 7)
- * - TODO: Real LLM: OpenAI/Groq integration (STEP 8)
+ * - ✅ Orchestrator: Coordinate action execution
+ * - ✅ LLM Integration: Multi-provider with fallback
+ * - ✅ Error handling: Always returns 200, never crashes
  * 
  * This controller is now thin - it validates requests and delegates to orchestrator.
  */
@@ -48,132 +50,87 @@ async function handleChat(req, res) {
   try {
     const { tenant, message, action } = req.body;
 
-    // Validate required fields
+    // Validate required fields - return 200 with success: false
     if (!tenant) {
-      return res.status(400).json({
+      return res.status(200).json({
         success: false,
         error: 'Bad Request',
-        message: 'Missing required field: tenant'
+        message: 'Missing required field: tenant',
+        type: 'validation_error'
       });
     }
 
     if (!message && !action) {
-      return res.status(400).json({
+      return res.status(200).json({
         success: false,
         error: 'Bad Request',
-        message: 'Either message or action is required'
+        message: 'Either message or action is required',
+        type: 'validation_error'
       });
     }
 
     // Delegate to orchestrator controller
-    // The orchestrator will:
-    // - Load tenant config and action registry
-    // - Process message with LLM (if message provided)
-    // - Execute action directly (if action provided)
-    // - Return unified response
     const response = await orchestratorController.handleRequest(req.body);
 
-    res.json(response);
+    // Ensure response has success flag
+    if (response.success === undefined) {
+      response.success = true;
+    }
+
+    res.status(200).json(response);
 
   } catch (error) {
     console.error('Error in handleChat:', error);
 
-    // Handle tenant-specific errors
-    if (error instanceof TenantNotFoundError) {
-      return res.status(404).json({
-        success: false,
-        error: 'Tenant Not Found',
-        message: error.message,
-        tenantId: error.tenantId
-      });
-    }
-
-    if (error instanceof InvalidTenantConfigError) {
-      return res.status(500).json({
-        success: false,
-        error: 'Invalid Tenant Configuration',
-        message: error.message,
-        tenantId: error.tenantId
-      });
-    }
-
-    // Handle registry-specific errors
-    if (error instanceof RegistryNotFoundError) {
-      return res.status(500).json({
-        success: false,
-        error: 'Registry Not Found',
-        message: error.message,
-        tenantId: error.tenantId
-      });
-    }
-
-    if (error instanceof InvalidRegistryError) {
-      return res.status(500).json({
-        success: false,
-        error: 'Invalid Registry Configuration',
-        message: error.message,
-        tenantId: error.tenantId
-      });
-    }
-
-    // Handle orchestrator/action errors
-    if (error instanceof ActionNotFoundError) {
-      return res.status(404).json({
-        success: false,
-        error: 'Action Not Found',
-        message: error.message,
-        action: error.action,
-        tenantId: error.tenantId
-      });
-    }
-
-    if (error instanceof ActionDisabledError) {
-      return res.status(403).json({
-        success: false,
-        error: 'Action Disabled',
-        message: error.message,
-        action: error.action,
-        tenantId: error.tenantId
-      });
-    }
-
-    if (error instanceof InvalidHandlerError) {
-      return res.status(500).json({
-        success: false,
-        error: 'Invalid Handler',
-        message: error.message,
-        handler: error.handler,
-        action: error.action
-      });
-    }
-
-    if (error instanceof AdapterNotFoundError) {
-      return res.status(500).json({
-        success: false,
-        error: 'Adapter Not Found',
-        message: error.message,
-        namespace: error.namespace,
-        action: error.action
-      });
-    }
-
-    if (error instanceof FunctionNotFoundError) {
-      return res.status(500).json({
-        success: false,
-        error: 'Function Not Found',
-        message: error.message,
-        functionName: error.functionName,
-        namespace: error.namespace,
-        action: error.action
-      });
-    }
-
-    // Handle generic errors
-    res.status(500).json({
+    // CRITICAL: Always return 200 with success: false to prevent UI freezes
+    // The error type is included for debugging, but HTTP status is always 200
+    
+    const errorResponse = {
       success: false,
-      error: 'Internal Server Error',
-      message: error.message
-    });
+      message: error.message || 'An unexpected error occurred',
+      type: 'error'
+    };
+
+    // Add specific error details based on error type
+    if (error instanceof TenantNotFoundError) {
+      errorResponse.type = 'tenant_not_found';
+      errorResponse.tenantId = error.tenantId;
+    } else if (error instanceof InvalidTenantConfigError) {
+      errorResponse.type = 'invalid_tenant_config';
+      errorResponse.tenantId = error.tenantId;
+    } else if (error instanceof RegistryNotFoundError) {
+      errorResponse.type = 'registry_not_found';
+      errorResponse.tenantId = error.tenantId;
+    } else if (error instanceof InvalidRegistryError) {
+      errorResponse.type = 'invalid_registry';
+      errorResponse.tenantId = error.tenantId;
+    } else if (error instanceof ActionNotFoundError) {
+      errorResponse.type = 'action_not_found';
+      errorResponse.action = error.action;
+      errorResponse.tenantId = error.tenantId;
+    } else if (error instanceof ActionDisabledError) {
+      errorResponse.type = 'action_disabled';
+      errorResponse.action = error.action;
+      errorResponse.tenantId = error.tenantId;
+    } else if (error instanceof InvalidHandlerError) {
+      errorResponse.type = 'invalid_handler';
+      errorResponse.handler = error.handler;
+      errorResponse.action = error.action;
+    } else if (error instanceof AdapterNotFoundError) {
+      errorResponse.type = 'adapter_not_found';
+      errorResponse.namespace = error.namespace;
+      errorResponse.action = error.action;
+    } else if (error instanceof FunctionNotFoundError) {
+      errorResponse.type = 'function_not_found';
+      errorResponse.functionName = error.functionName;
+      errorResponse.namespace = error.namespace;
+      errorResponse.action = error.action;
+    } else {
+      errorResponse.type = 'internal_error';
+    }
+
+    // Always return 200 - UI handles success: false gracefully
+    res.status(200).json(errorResponse);
   }
 }
 

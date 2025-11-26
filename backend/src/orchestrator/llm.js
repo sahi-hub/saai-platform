@@ -1,673 +1,512 @@
 /**
- * Multi-Provider LLM Orchestrator Module
+ * SAAI LLM Orchestrator - Refactored
  * 
- * Supports multiple LLM providers with automatic fallback:
- * Priority order: GROQ → GEMINI → MISTRAL → MOCK
- * 
- * All providers support unified function-calling output format.
+ * Multi-provider LLM interface with:
+ * - TEXT-ONLY provider responses (no native tool calling)
+ * - Internal keyword-based tool planner (determineTool)
+ * - Provider fallback loop: GROQ -> GEMINI -> MISTRAL -> MOCK
+ * - Graceful error handling (never crashes)
  */
 
 const Groq = require('groq-sdk');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
-const Mistral = require('@mistralai/mistralai');
-require('dotenv').config();
+const Mistral = require('@mistralai/mistralai').default;
 
 // ============================================================================
-// MAIN ENTRY POINT
+// CONFIGURATION
+// ============================================================================
+
+const PROVIDER_ORDER = ['groq', 'gemini', 'mistral', 'mock'];
+
+const PROVIDER_CONFIG = {
+  groq: {
+    model: 'llama-3.3-70b-versatile',
+    maxTokens: 4096,
+    temperature: 0.7
+  },
+  gemini: {
+    model: 'gemini-1.5-flash',
+    maxTokens: 4096,
+    temperature: 0.7
+  },
+  mistral: {
+    model: 'mistral-small-latest',
+    maxTokens: 4096,
+    temperature: 0.7
+  }
+};
+
+// ============================================================================
+// INTERNAL TOOL PLANNER - Keyword-based tool detection
 // ============================================================================
 
 /**
- * Run LLM processing with multi-provider fallback
+ * Determines if a message indicates a tool action should be executed
+ * Uses keyword matching to detect user intent
  * 
- * @param {Object} options - Options object
- * @param {string} options.message - User's message text
- * @param {Object} options.tenantConfig - Tenant configuration
- * @param {Object} options.actionRegistry - Available actions for this tenant
- * @param {Array} options.conversationHistory - Previous messages (optional)
- * @returns {Promise<Object>} Normalized LLM decision object
+ * @param {string} messageString - The user's message or LLM response
+ * @param {Object} actionRegistry - Registry of available actions
+ * @returns {Object|null} - { action, params } or null if no tool detected
  */
-async function runLLM({ message, tenantConfig, actionRegistry, conversationHistory = [] }) {
-  console.log(`[llm] Processing message for tenant: ${tenantConfig.tenantId}`);
-  console.log(`[llm] Message: "${message}"`);
-  console.log(`[llm] Available actions: ${Object.keys(actionRegistry).length}`);
+function determineTool(messageString, actionRegistry = {}) {
+  if (!messageString || typeof messageString !== 'string') {
+    return null;
+  }
 
-  // Get provider priority from environment
-  const priorityString = process.env.LLM_PRIORITY || 'GROQ,GEMINI,MISTRAL,MOCK';
-  const providerList = priorityString.split(',').map(p => p.trim().toUpperCase());
-  
-  console.log(`[llm] Provider priority: ${providerList.join(' → ')}`);
+  const lower = messageString.toLowerCase().trim();
 
-  // Prepare request context
-  const request = {
-    message,
-    actionRegistry,
-    tenantConfig,
-    conversationHistory
+  // -------------------------------------------------------------------------
+  // OUTFIT INTENT (check first - more specific than general recommend)
+  // -------------------------------------------------------------------------
+  const outfitPatterns = [
+    'outfit', 'dress me', 'complete look', 'what should i wear',
+    'what to wear', 'style me', 'put together', 'coordinate',
+    'match with', 'goes with', 'pair with', 'combine with',
+    'full look', 'entire outfit', 'wardrobe'
+  ];
+
+  for (const pattern of outfitPatterns) {
+    if (lower.includes(pattern)) {
+      if (actionRegistry.recommend_outfit?.enabled !== false) {
+        return { action: 'recommend_outfit', params: { query: messageString } };
+      }
+      if (actionRegistry['recommender.outfit']?.enabled !== false) {
+        return { action: 'recommender.outfit', params: { query: messageString } };
+      }
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // RECOMMENDATION INTENT
+  // -------------------------------------------------------------------------
+  const recommendPatterns = [
+    'recommend', 'suggest', 'show me', 'find me', 'looking for',
+    'need a', 'want a', 'search for', 'browse', 'discover',
+    'what do you have', 'any products', 'something similar',
+    'alternatives', 'options for'
+  ];
+
+  for (const pattern of recommendPatterns) {
+    if (lower.includes(pattern)) {
+      if (actionRegistry.recommend_products?.enabled !== false) {
+        return { action: 'recommend_products', params: { query: messageString } };
+      }
+      if (actionRegistry['recommender.recommend']?.enabled !== false) {
+        return { action: 'recommender.recommend', params: { query: messageString } };
+      }
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // ADD TO CART INTENT
+  // -------------------------------------------------------------------------
+  const cartAddPatterns = [
+    'add to cart', 'add to my cart', 'add this to cart',
+    'put in cart', 'add to basket', 'buy this', 'purchase this',
+    'i want this', "i'll take", 'get this'
+  ];
+
+  for (const pattern of cartAddPatterns) {
+    if (lower.includes(pattern)) {
+      const productId = extractProductId(messageString);
+      if (actionRegistry.add_to_cart?.enabled !== false ||
+          actionRegistry['commerce.addToCart']?.enabled !== false) {
+        return {
+          action: actionRegistry.add_to_cart ? 'add_to_cart' : 'commerce.addToCart',
+          params: { productId: productId || 'unknown' }
+        };
+      }
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // VIEW CART INTENT
+  // -------------------------------------------------------------------------
+  const viewCartPatterns = [
+    'view cart', 'show cart', 'my cart', "what's in my cart",
+    'cart contents', 'see cart', 'check cart'
+  ];
+
+  for (const pattern of viewCartPatterns) {
+    if (lower.includes(pattern)) {
+      if (actionRegistry.view_cart?.enabled !== false ||
+          actionRegistry['commerce.viewCart']?.enabled !== false) {
+        return {
+          action: actionRegistry.view_cart ? 'view_cart' : 'commerce.viewCart',
+          params: {}
+        };
+      }
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // CHECKOUT INTENT
+  // -------------------------------------------------------------------------
+  const checkoutPatterns = [
+    'checkout', 'check out', 'pay now', 'complete order',
+    'place order', 'finish purchase', 'buy now'
+  ];
+
+  for (const pattern of checkoutPatterns) {
+    if (lower.includes(pattern)) {
+      if (actionRegistry.checkout?.enabled !== false ||
+          actionRegistry['commerce.checkout']?.enabled !== false) {
+        return {
+          action: actionRegistry.checkout ? 'checkout' : 'commerce.checkout',
+          params: {}
+        };
+      }
+    }
+  }
+
+  // No tool detected
+  return null;
+}
+
+/**
+ * Extract product ID from message string
+ */
+function extractProductId(message) {
+  if (!message) return null;
+
+  const patterns = [
+    /product[_-]?id[:\s]*([a-zA-Z0-9_-]+)/i,
+    /product[:\s]*#?([a-zA-Z0-9_-]+)/i,
+    /id[:\s]*([a-zA-Z0-9_-]+)/i,
+    /#([a-zA-Z0-9_-]+)/,
+    /\b([a-zA-Z0-9_-]{8,})\b/
+  ];
+
+  for (const pattern of patterns) {
+    const match = message.match(pattern);
+    if (match && match[1]) {
+      return match[1];
+    }
+  }
+
+  return null;
+}
+
+// ============================================================================
+// PROVIDER DRIVERS - Text-only responses (NO native tool calling)
+// ============================================================================
+
+/**
+ * Call GROQ LLM - Returns plain text only
+ */
+async function callGroqLLM(messages, systemPrompt) {
+  const apiKey = process.env.GROQ_API_KEY;
+  if (!apiKey) {
+    return { success: false, error: 'GROQ_API_KEY not configured' };
+  }
+
+  try {
+    const groq = new Groq({ apiKey });
+
+    const formattedMessages = [];
+
+    if (systemPrompt) {
+      formattedMessages.push({ role: 'system', content: systemPrompt });
+    }
+
+    for (const msg of messages) {
+      formattedMessages.push({
+        role: msg.role === 'assistant' ? 'assistant' : 'user',
+        content: msg.content || ''
+      });
+    }
+
+    const response = await groq.chat.completions.create({
+      model: PROVIDER_CONFIG.groq.model,
+      messages: formattedMessages,
+      max_tokens: PROVIDER_CONFIG.groq.maxTokens,
+      temperature: PROVIDER_CONFIG.groq.temperature
+    });
+
+    const content = response.choices?.[0]?.message?.content || '';
+
+    return {
+      success: true,
+      content: content.trim(),
+      provider: 'groq',
+      model: PROVIDER_CONFIG.groq.model
+    };
+
+  } catch (error) {
+    console.error('[LLM] GROQ error:', error.message);
+    return { success: false, error: error.message, provider: 'groq' };
+  }
+}
+
+/**
+ * Call Gemini LLM - Returns plain text only (uses v1 API)
+ */
+async function callGeminiLLM(messages, systemPrompt) {
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey) {
+    return { success: false, error: 'GEMINI_API_KEY not configured' };
+  }
+
+  try {
+    const genAI = new GoogleGenerativeAI(apiKey);
+    const model = genAI.getGenerativeModel({ model: PROVIDER_CONFIG.gemini.model });
+
+    const parts = [];
+
+    if (systemPrompt) {
+      parts.push({ text: 'System: ' + systemPrompt + '\n\n' });
+    }
+
+    for (const msg of messages) {
+      const role = msg.role === 'assistant' ? 'Assistant' : 'User';
+      parts.push({ text: role + ': ' + (msg.content || '') + '\n' });
+    }
+
+    parts.push({ text: 'Assistant: ' });
+
+    const result = await model.generateContent({
+      contents: [{ parts }],
+      generationConfig: {
+        maxOutputTokens: PROVIDER_CONFIG.gemini.maxTokens,
+        temperature: PROVIDER_CONFIG.gemini.temperature
+      }
+    });
+
+    const response = result.response;
+    const content = response.text() || '';
+
+    return {
+      success: true,
+      content: content.trim(),
+      provider: 'gemini',
+      model: PROVIDER_CONFIG.gemini.model
+    };
+
+  } catch (error) {
+    console.error('[LLM] Gemini error:', error.message);
+    return { success: false, error: error.message, provider: 'gemini' };
+  }
+}
+
+/**
+ * Call Mistral LLM - Returns plain text only
+ */
+async function callMistralLLM(messages, systemPrompt) {
+  const apiKey = process.env.MISTRAL_API_KEY;
+  if (!apiKey) {
+    return { success: false, error: 'MISTRAL_API_KEY not configured' };
+  }
+
+  try {
+    const mistral = new Mistral({ apiKey });
+
+    const formattedMessages = [];
+
+    if (systemPrompt) {
+      formattedMessages.push({ role: 'system', content: systemPrompt });
+    }
+
+    for (const msg of messages) {
+      formattedMessages.push({
+        role: msg.role === 'assistant' ? 'assistant' : 'user',
+        content: msg.content || ''
+      });
+    }
+
+    const response = await mistral.chat.complete({
+      model: PROVIDER_CONFIG.mistral.model,
+      messages: formattedMessages,
+      maxTokens: PROVIDER_CONFIG.mistral.maxTokens,
+      temperature: PROVIDER_CONFIG.mistral.temperature
+    });
+
+    const content = response.choices?.[0]?.message?.content || '';
+
+    return {
+      success: true,
+      content: content.trim(),
+      provider: 'mistral',
+      model: PROVIDER_CONFIG.mistral.model
+    };
+
+  } catch (error) {
+    console.error('[LLM] Mistral error:', error.message);
+    return { success: false, error: error.message, provider: 'mistral' };
+  }
+}
+
+/**
+ * Mock LLM - Pattern matching fallback (always works)
+ */
+async function callMockLLM(messages, systemPrompt) {
+  const lastMessage = messages[messages.length - 1]?.content || '';
+  const lower = lastMessage.toLowerCase();
+
+  let content = '';
+
+  if (lower.includes('outfit') || lower.includes('wear')) {
+    content = "I'd be happy to help you create a complete outfit! Let me put together some coordinated pieces that would work well together based on your preferences.";
+  } else if (lower.includes('recommend') || lower.includes('suggest') || lower.includes('show')) {
+    content = "I'd love to recommend some products for you! Based on what you're looking for, let me find some great options.";
+  } else if (lower.includes('cart')) {
+    content = 'I can help you with your shopping cart. What would you like to do?';
+  } else if (lower.includes('hello') || lower.includes('hi') || lower.includes('hey')) {
+    content = "Hello! I'm your AI shopping assistant. How can I help you today? I can recommend products, create outfits, or help you find what you're looking for.";
+  } else if (lower.includes('thank')) {
+    content = "You're welcome! Is there anything else I can help you with?";
+  } else if (lower.includes('help')) {
+    content = "I'm here to help! I can:\n- Recommend products based on your preferences\n- Create complete outfit suggestions\n- Help you find specific items\n- Manage your shopping cart\n\nWhat would you like to do?";
+  } else {
+    content = "I understand you're interested in shopping. Would you like me to recommend some products or help you find something specific?";
+  }
+
+  return {
+    success: true,
+    content: content,
+    provider: 'mock',
+    model: 'mock-v1'
   };
+}
 
-  // Try each provider in order
-  for (const provider of providerList) {
+// ============================================================================
+// MAIN LLM ORCHESTRATOR
+// ============================================================================
+
+/**
+ * Run LLM with provider fallback loop
+ * 
+ * @param {Object} options
+ * @param {Array} options.messages - Conversation messages
+ * @param {string} options.systemPrompt - System prompt
+ * @param {Object} options.actionRegistry - Available actions
+ * @param {string} options.preferredProvider - Preferred provider (optional)
+ * @returns {Object} - { type: 'tool'|'message', ... }
+ */
+async function runLLM({
+  messages = [],
+  systemPrompt = '',
+  actionRegistry = {},
+  preferredProvider = null
+}) {
+  let providers = [...PROVIDER_ORDER];
+  if (preferredProvider && PROVIDER_ORDER.includes(preferredProvider)) {
+    providers = [preferredProvider, ...PROVIDER_ORDER.filter(p => p !== preferredProvider)];
+  }
+
+  const enhancedSystemPrompt = systemPrompt + '\n\nIMPORTANT: When the user asks for product recommendations, outfit suggestions, or wants to perform shopping actions, respond naturally while clearly expressing the intent. Always be helpful, conversational, and focused on assisting with shopping needs.';
+
+  let lastError = null;
+  let llmResponse = null;
+
+  for (const provider of providers) {
+    console.log('[LLM] Trying provider: ' + provider);
+
     try {
-      console.log(`[llm] Trying provider: ${provider}`);
-      
-      let rawResponse;
-      
       switch (provider) {
-        case 'GROQ':
-          rawResponse = await callGroqLLM(request);
+        case 'groq':
+          llmResponse = await callGroqLLM(messages, enhancedSystemPrompt);
           break;
-        
-        case 'GEMINI':
-          rawResponse = await callGeminiLLM(request);
+        case 'gemini':
+          llmResponse = await callGeminiLLM(messages, enhancedSystemPrompt);
           break;
-        
-        case 'MISTRAL':
-          rawResponse = await callMistralLLM(request);
+        case 'mistral':
+          llmResponse = await callMistralLLM(messages, enhancedSystemPrompt);
           break;
-        
-        case 'MOCK':
-          rawResponse = await callMockLLM(request);
+        case 'mock':
+          llmResponse = await callMockLLM(messages, enhancedSystemPrompt);
           break;
-        
         default:
-          console.log(`[llm] Unknown provider: ${provider}, skipping`);
           continue;
       }
 
-      // Normalize response to unified format
-      const normalized = normalizeProviderResponse(provider, rawResponse, request);
-      
-      console.log(`[llm] ✓ Success with ${provider}`);
-      console.log(`[llm] Decision type: ${normalized.type}`);
-      if (normalized.type === 'tool') {
-        console.log(`[llm] Tool selected: ${normalized.action}`);
+      if (llmResponse.success) {
+        console.log('[LLM] Success with provider: ' + provider);
+        break;
+      } else {
+        console.log('[LLM] Provider ' + provider + ' failed: ' + llmResponse.error);
+        lastError = llmResponse.error;
       }
-      
-      return normalized;
-
     } catch (error) {
-      console.log(`[llm] ✗ ${provider} failed: ${error.message}`);
-      // Continue to next provider
+      console.error('[LLM] Provider ' + provider + ' threw error:', error.message);
+      lastError = error.message;
     }
   }
 
-  // All providers failed, use mock as absolute fallback
-  console.log(`[llm] All providers failed, using MOCK fallback`);
-  const mockResponse = await callMockLLM(request);
-  return normalizeProviderResponse('MOCK', mockResponse, request);
-}
-
-// ============================================================================
-// PROVIDER DRIVERS
-// ============================================================================
-
-/**
- * Call Groq LLM with function calling
- */
-async function callGroqLLM(request) {
-  const apiKey = process.env.GROQ_API_KEY;
-  
-  if (!apiKey) {
-    throw new Error('GROQ_API_KEY not configured');
+  if (!llmResponse || !llmResponse.success) {
+    console.error('[LLM] All providers failed, returning graceful message');
+    return {
+      type: 'message',
+      text: "I apologize, but I'm having trouble connecting right now. Please try again in a moment.",
+      provider: 'fallback',
+      error: lastError
+    };
   }
 
-  const groq = new Groq({ apiKey });
-  
-  // Build system prompt
-  const systemPrompt = buildSystemPrompt(request.tenantConfig, request.actionRegistry);
-  
-  // Build tools/functions from action registry
-  const tools = buildToolsFromRegistry(request.actionRegistry);
-  
-  // Call Groq API
-  const chatCompletion = await groq.chat.completions.create({
-    messages: [
-      { role: 'system', content: systemPrompt },
-      { role: 'user', content: request.message }
-    ],
-    model: 'llama-3.3-70b-versatile', // Fast and capable model
-    temperature: 0.7,
-    max_tokens: 1024,
-    tools: tools.length > 0 ? tools : undefined,
-    tool_choice: tools.length > 0 ? 'auto' : undefined
-  });
+  const userMessage = messages[messages.length - 1]?.content || '';
+  const combinedText = userMessage + ' ' + llmResponse.content;
 
-  return {
-    provider: 'GROQ',
-    raw: chatCompletion
-  };
-}
+  const toolIntent = determineTool(combinedText, actionRegistry);
 
-/**
- * Call Google Gemini LLM
- */
-async function callGeminiLLM(request) {
-  const apiKey = process.env.GEMINI_API_KEY;
-  
-  if (!apiKey) {
-    throw new Error('GEMINI_API_KEY not configured');
-  }
-
-  const genAI = new GoogleGenerativeAI(apiKey);
-  const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' });
-  
-  // Build prompt with function calling instructions
-  const systemPrompt = buildSystemPrompt(request.tenantConfig, request.actionRegistry);
-  const fullPrompt = `${systemPrompt}\n\nUser message: ${request.message}`;
-  
-  // Gemini function calling
-  const tools = buildGeminiTools(request.actionRegistry);
-  
-  const result = await model.generateContent({
-    contents: [{ role: 'user', parts: [{ text: fullPrompt }] }],
-    tools: tools.length > 0 ? tools : undefined,
-    generationConfig: {
-      temperature: 0.7,
-      maxOutputTokens: 1024
-    }
-  });
-
-  return {
-    provider: 'GEMINI',
-    raw: result.response
-  };
-}
-
-/**
- * Call Mistral LLM
- */
-async function callMistralLLM(request) {
-  const apiKey = process.env.MISTRAL_API_KEY;
-  
-  if (!apiKey) {
-    throw new Error('MISTRAL_API_KEY not configured');
-  }
-
-  const client = new Mistral({ apiKey });
-  
-  // Build system prompt
-  const systemPrompt = buildSystemPrompt(request.tenantConfig, request.actionRegistry);
-  
-  // Build tools
-  const tools = buildToolsFromRegistry(request.actionRegistry);
-  
-  // Call Mistral API
-  const chatResponse = await client.chat.complete({
-    model: 'mistral-small-latest',
-    messages: [
-      { role: 'system', content: systemPrompt },
-      { role: 'user', content: request.message }
-    ],
-    temperature: 0.7,
-    maxTokens: 1024,
-    tools: tools.length > 0 ? tools : undefined,
-    toolChoice: tools.length > 0 ? 'auto' : undefined
-  });
-
-  return {
-    provider: 'MISTRAL',
-    raw: chatResponse
-  };
-}
-
-/**
- * Call Mock LLM (pattern matching fallback)
- */
-async function callMockLLM(request) {
-  const { message, actionRegistry, tenantConfig } = request;
-  const lowerMessage = message.toLowerCase();
-
-  // Simulate processing delay
-  await new Promise(resolve => setTimeout(resolve, 50));
-
-  // Pattern matching for common intents
-  
-  // Outfit recommendation intent (more specific, check first)
-  if ((lowerMessage.includes('outfit') && (lowerMessage.includes('complete') || lowerMessage.includes('full') || lowerMessage.includes('entire'))) ||
-      lowerMessage.includes('dress me') ||
-      lowerMessage.includes('what should i wear') ||
-      lowerMessage.includes('complete look') ||
-      (lowerMessage.includes('eid') && lowerMessage.includes('outfit'))) {
-    
-    if (actionRegistry.recommend_outfit?.enabled) {
-      return {
-        type: 'tool',
-        action: 'recommend_outfit',
-        params: {
-          query: message,
-          preferences: []
-        },
-        reasoning: 'Mock LLM detected outfit recommendation intent'
-      };
-    }
-  }
-  
-  // General recommendation intent
-  if (lowerMessage.includes('recommend') || 
-      lowerMessage.includes('suggest') || 
-      lowerMessage.includes('outfit') ||
-      lowerMessage.includes('idea') ||
-      lowerMessage.includes('eid') ||
-      lowerMessage.includes('style') ||
-      lowerMessage.includes('what to wear')) {
-    
-    if (actionRegistry.recommend_products?.enabled) {
-      return {
-        type: 'tool',
-        action: 'recommend_products',
-        params: {
-          query: message,
-          preferences: []
-        },
-        reasoning: 'Mock LLM detected recommendation intent'
-      };
-    }
-  }
-
-  // Search intent
-  if (lowerMessage.includes('search') || 
-      lowerMessage.includes('find') || 
-      lowerMessage.includes('look for') ||
-      lowerMessage.includes('show me')) {
-    
-    if (actionRegistry.search_products?.enabled) {
-      const query = extractSearchQuery(message);
-      return {
-        type: 'tool',
-        action: 'search_products',
-        params: { query },
-        reasoning: `Mock LLM detected search intent for "${query}"`
-      };
-    }
-  }
-
-  // Add to cart intent
-  if ((lowerMessage.includes('add') && (lowerMessage.includes('cart') || lowerMessage.includes('basket'))) ||
-      lowerMessage.includes('buy') ||
-      lowerMessage.includes('purchase') ||
-      lowerMessage.includes('get me')) {
-    
-    if (actionRegistry.add_to_cart?.enabled) {
-      const productInfo = extractProductInfo(message);
-      return {
-        type: 'tool',
-        action: 'add_to_cart',
-        params: productInfo,
-        reasoning: 'Mock LLM detected add-to-cart/purchase intent'
-      };
-    }
-  }
-
-  // Checkout intent
-  if (lowerMessage.includes('checkout') || 
-      lowerMessage.includes('complete order') ||
-      lowerMessage.includes('finalize purchase') ||
-      lowerMessage.includes('pay now')) {
-    
-    if (actionRegistry.checkout?.enabled) {
-      return {
-        type: 'tool',
-        action: 'checkout',
-        params: { cartId: 'cart-' + Math.random().toString(36).substring(7) },
-        reasoning: 'Mock LLM detected checkout intent'
-      };
-    }
-  }
-
-  // Support intent
-  if (lowerMessage.includes('help') || 
-      lowerMessage.includes('problem') ||
-      lowerMessage.includes('issue') ||
-      lowerMessage.includes('support')) {
-    
-    if (actionRegistry.create_ticket?.enabled) {
-      return {
-        type: 'tool',
-        action: 'create_ticket',
-        params: {
-          subject: 'User Support Request',
-          description: message
-        },
-        reasoning: 'Mock LLM detected support request'
-      };
-    }
-  }
-
-  // Default: conversational response
-  return {
-    type: 'message',
-    text: generateMockResponse(message, tenantConfig),
-    reasoning: 'No tool intent detected, returning conversational response'
-  };
-}
-
-// ============================================================================
-// RESPONSE NORMALIZATION
-// ============================================================================
-
-/**
- * Normalize provider-specific responses to unified format
- * 
- * @param {string} provider - Provider name (GROQ, GEMINI, MISTRAL, MOCK)
- * @param {Object} rawResponse - Raw provider response
- * @param {Object} request - Original request context
- * @returns {Object} Normalized response: {type, action, params, text, reasoning}
- */
-function normalizeProviderResponse(provider, rawResponse, request) {
-  switch (provider) {
-    case 'GROQ':
-      return normalizeGroqResponse(rawResponse, request);
-    
-    case 'GEMINI':
-      return normalizeGeminiResponse(rawResponse, request);
-    
-    case 'MISTRAL':
-      return normalizeMistralResponse(rawResponse, request);
-    
-    case 'MOCK':
-      // Mock already returns normalized format
-      return rawResponse;
-    
-    default:
-      throw new Error(`Unknown provider: ${provider}`);
-  }
-}
-
-/**
- * Normalize Groq response (OpenAI-compatible format)
- */
-function normalizeGroqResponse(response, request) {
-  const message = response.raw.choices[0].message;
-  
-  // Check for tool calls
-  if (message.tool_calls && message.tool_calls.length > 0) {
-    const toolCall = message.tool_calls[0];
-    const functionName = toolCall.function.name;
-    const functionArgs = JSON.parse(toolCall.function.arguments);
-    
+  if (toolIntent) {
+    console.log('[LLM] Tool detected: ' + toolIntent.action);
     return {
       type: 'tool',
-      action: functionName,
-      params: functionArgs,
-      reasoning: `Groq LLM selected tool: ${functionName}`,
-      provider: 'GROQ',
-      _meta: {
-        model: response.raw.model,
-        usage: response.raw.usage
-      }
+      action: toolIntent.action,
+      params: toolIntent.params,
+      text: llmResponse.content,
+      provider: llmResponse.provider,
+      model: llmResponse.model
     };
   }
-  
-  // Regular message
-  return {
-    type: 'message',
-    text: message.content,
-    reasoning: 'Groq LLM returned conversational response',
-    provider: 'GROQ',
-    _meta: {
-      model: response.raw.model,
-      usage: response.raw.usage
-    }
-  };
-}
 
-/**
- * Normalize Gemini response
- */
-function normalizeGeminiResponse(response, request) {
-  const candidate = response.raw.candidates?.[0];
-  
-  if (!candidate) {
-    throw new Error('Gemini response has no candidates');
-  }
-  
-  const content = candidate.content;
-  
-  // Check for function calls
-  if (content.parts?.[0]?.functionCall) {
-    const functionCall = content.parts[0].functionCall;
-    
-    return {
-      type: 'tool',
-      action: functionCall.name,
-      params: functionCall.args,
-      reasoning: `Gemini LLM selected tool: ${functionCall.name}`,
-      provider: 'GEMINI',
-      _meta: {
-        model: 'gemini-1.5-flash'
-      }
-    };
-  }
-  
-  // Regular text response
-  const text = content.parts?.[0]?.text || '';
-  
   return {
     type: 'message',
-    text: text,
-    reasoning: 'Gemini LLM returned conversational response',
-    provider: 'GEMINI',
-    _meta: {
-      model: 'gemini-1.5-flash'
-    }
-  };
-}
-
-/**
- * Normalize Mistral response
- */
-function normalizeMistralResponse(response, request) {
-  const message = response.raw.choices?.[0]?.message;
-  
-  if (!message) {
-    throw new Error('Mistral response has no message');
-  }
-  
-  // Check for tool calls
-  if (message.toolCalls && message.toolCalls.length > 0) {
-    const toolCall = message.toolCalls[0];
-    const functionName = toolCall.function.name;
-    const functionArgs = typeof toolCall.function.arguments === 'string' 
-      ? JSON.parse(toolCall.function.arguments)
-      : toolCall.function.arguments;
-    
-    return {
-      type: 'tool',
-      action: functionName,
-      params: functionArgs,
-      reasoning: `Mistral LLM selected tool: ${functionName}`,
-      provider: 'MISTRAL',
-      _meta: {
-        model: response.raw.model,
-        usage: response.raw.usage
-      }
-    };
-  }
-  
-  // Regular message
-  return {
-    type: 'message',
-    text: message.content,
-    reasoning: 'Mistral LLM returned conversational response',
-    provider: 'MISTRAL',
-    _meta: {
-      model: response.raw.model,
-      usage: response.raw.usage
-    }
+    text: llmResponse.content,
+    provider: llmResponse.provider,
+    model: llmResponse.model
   };
 }
 
 // ============================================================================
-// PROMPT BUILDING
+// UTILITY FUNCTIONS
 // ============================================================================
 
-/**
- * Build system prompt for LLM
- */
-function buildSystemPrompt(tenantConfig, actionRegistry) {
-  const availableActions = Object.entries(actionRegistry)
-    .filter(([_, config]) => config.enabled)
-    .map(([name, _]) => name);
+function buildSystemPrompt(tenantConfig) {
+  const brandName = tenantConfig?.settings?.brandName || 'Store';
+  const brandVoice = tenantConfig?.settings?.brandVoice || 'friendly and helpful';
+  const productCategories = tenantConfig?.settings?.productCategories || [];
 
-  return `You are an AI assistant for ${tenantConfig.displayName}.
+  let prompt = 'You are a helpful AI shopping assistant for ' + brandName + '. Your tone is ' + brandVoice + '.';
 
-Your role is to help users by either:
-1. Responding with natural conversational text
-2. Calling available tools/actions to fulfill their request
-
-Available actions: ${availableActions.join(', ')}
-
-When a user asks to do something that matches an available action, call that action.
-Otherwise, respond conversationally.
-
-Be helpful, concise, and professional.`;
-}
-
-/**
- * Build OpenAI/Groq/Mistral compatible tools from action registry
- */
-function buildToolsFromRegistry(actionRegistry) {
-  const tools = [];
-  
-  for (const [actionName, actionConfig] of Object.entries(actionRegistry)) {
-    if (!actionConfig.enabled) continue;
-    
-    // Create tool definition
-    const tool = {
-      type: 'function',
-      function: {
-        name: actionName,
-        description: actionConfig.description || `Execute ${actionName} action`,
-        parameters: {
-          type: 'object',
-          properties: {},
-          required: []
-        }
-      }
-    };
-    
-    // Add common parameters based on action type
-    if (actionName.includes('search')) {
-      tool.function.parameters.properties.query = {
-        type: 'string',
-        description: 'Search query'
-      };
-      tool.function.parameters.required.push('query');
-    }
-    
-    if (actionName.includes('cart')) {
-      tool.function.parameters.properties.productId = {
-        type: 'string',
-        description: 'Product ID'
-      };
-      tool.function.parameters.properties.quantity = {
-        type: 'integer',
-        description: 'Quantity',
-        default: 1
-      };
-    }
-    
-    if (actionName.includes('checkout')) {
-      tool.function.parameters.properties.cartId = {
-        type: 'string',
-        description: 'Cart ID'
-      };
-    }
-    
-    if (actionName.includes('ticket')) {
-      tool.function.parameters.properties.subject = {
-        type: 'string',
-        description: 'Ticket subject'
-      };
-      tool.function.parameters.properties.description = {
-        type: 'string',
-        description: 'Issue description'
-      };
-      tool.function.parameters.required.push('subject', 'description');
-    }
-    
-    if (actionName.includes('recommend')) {
-      tool.function.parameters.properties.query = {
-        type: 'string',
-        description: 'Recommendation query (e.g., "eid outfit", "formal shoes")'
-      };
-      tool.function.parameters.properties.preferences = {
-        type: 'array',
-        items: {
-          type: 'string'
-        },
-        description: 'User preferences (e.g., colors, styles, categories)',
-        default: []
-      };
-      tool.function.parameters.properties.limit = {
-        type: 'integer',
-        description: 'Maximum number of recommendations to return',
-        default: 10
-      };
-    }
-    
-    tools.push(tool);
+  if (productCategories.length > 0) {
+    prompt += '\n\nWe specialize in: ' + productCategories.join(', ') + '.';
   }
-  
-  return tools;
+
+  prompt += '\n\nYour role is to:\n- Help customers find products they will love\n- Create outfit recommendations when asked\n- Answer questions about products and shopping\n- Guide customers through their shopping journey\n\nBe concise, helpful, and personable.';
+
+  return prompt;
 }
 
-/**
- * Build Gemini-specific tools format
- */
-function buildGeminiTools(actionRegistry) {
-  const tools = buildToolsFromRegistry(actionRegistry);
-  
-  if (tools.length === 0) {
-    return [];
-  }
-  
-  // Convert to Gemini format
-  const functionDeclarations = tools.map(tool => ({
-    name: tool.function.name,
-    description: tool.function.description,
-    parameters: tool.function.parameters
-  }));
-  
-  return [{ functionDeclarations }];
+function getProviderStatus() {
+  return {
+    groq: !!process.env.GROQ_API_KEY,
+    gemini: !!process.env.GEMINI_API_KEY,
+    mistral: !!process.env.MISTRAL_API_KEY,
+    mock: true
+  };
 }
 
-// ============================================================================
-// HELPER FUNCTIONS
-// ============================================================================
+function healthCheck() {
+  const status = getProviderStatus();
+  const available = Object.entries(status)
+    .filter(([_, v]) => v)
+    .map(([k, _]) => k);
 
-/**
- * Extract search query from message
- */
-function extractSearchQuery(message) {
-  let query = message
-    .toLowerCase()
-    .replace(/^(search for|find|look for|show me|get me)\s+/i, '')
-    .trim();
-  
-  return query || message;
-}
-
-/**
- * Extract product information from message
- */
-function extractProductInfo(message) {
-  const productIdMatch = message.match(/product[:\s]+([a-zA-Z0-9-]+)/i);
-  const productId = productIdMatch 
-    ? productIdMatch[1] 
-    : 'product-' + Math.random().toString(36).substring(7);
-  
-  const quantityMatch = message.match(/(\d+)\s*(x|times|of)?/);
-  const quantity = quantityMatch ? parseInt(quantityMatch[1]) : 1;
-  
-  return { productId, quantity };
-}
-
-/**
- * Generate mock conversational response
- */
-function generateMockResponse(message, tenantConfig) {
-  return `Hello! I'm the AI assistant for ${tenantConfig.displayName}. You said: "${message}". How can I help you today?`;
+  return {
+    healthy: available.length > 0,
+    availableProviders: available,
+    status
+  };
 }
 
 // ============================================================================
@@ -676,14 +515,15 @@ function generateMockResponse(message, tenantConfig) {
 
 module.exports = {
   runLLM,
-  // Provider drivers (for testing)
+  determineTool,
+  extractProductId,
   callGroqLLM,
   callGeminiLLM,
   callMistralLLM,
   callMockLLM,
-  // Normalization (for testing)
-  normalizeProviderResponse,
-  // Utilities (for testing)
   buildSystemPrompt,
-  buildToolsFromRegistry
+  getProviderStatus,
+  healthCheck,
+  PROVIDER_ORDER,
+  PROVIDER_CONFIG
 };
