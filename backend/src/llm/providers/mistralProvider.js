@@ -8,7 +8,7 @@
 const { Mistral } = require('@mistralai/mistralai');
 const { toOpenAIFormat } = require('../toolSchema');
 
-const MODEL = process.env.MISTRAL_MODEL || 'mistral-small-latest';
+const MODEL = process.env.MISTRAL_MODEL || 'open-mistral-nemo-2407';
 const MAX_TOKENS = 4096;
 const TEMPERATURE = 0.7;
 
