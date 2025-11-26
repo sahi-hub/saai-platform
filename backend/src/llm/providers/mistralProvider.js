@@ -5,7 +5,7 @@
  * Uses OpenAI-compatible format for tools.
  */
 
-const Mistral = require('@mistralai/mistralai').default;
+const { Mistral } = require('@mistralai/mistralai');
 const { toOpenAIFormat } = require('../toolSchema');
 
 const MODEL = process.env.MISTRAL_MODEL || 'mistral-small-latest';

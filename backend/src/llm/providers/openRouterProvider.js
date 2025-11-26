@@ -1,19 +1,20 @@
 /**
- * GROQ Provider
+ * OpenRouter Provider
  * 
- * Implements native tool/function calling with GROQ's API.
+ * Implements native tool/function calling with OpenRouter's API.
  * Uses OpenAI-compatible format for tools.
+ * Model: x-ai/grok-4.1-fast:free
  */
 
-const Groq = require('groq-sdk');
 const { toOpenAIFormat } = require('../toolSchema');
 
-const MODEL = process.env.GROQ_MODEL || 'llama-3.1-8b-instant';
+const MODEL = process.env.OPENROUTER_MODEL || 'x-ai/grok-4.1-fast:free';
 const MAX_TOKENS = 4096;
 const TEMPERATURE = 0.7;
+const BASE_URL = 'https://openrouter.ai/api/v1';
 
 /**
- * Call GROQ with tool/function calling support
+ * Call OpenRouter with tool/function calling support
  * 
  * @param {Object} options
  * @param {Array} options.messages - Conversation messages
@@ -21,20 +22,18 @@ const TEMPERATURE = 0.7;
  * @returns {Promise<Object>} Result with type: "message" or "tool"
  */
 async function callWithTools({ messages, enableTools = true }) {
-  const apiKey = process.env.GROQ_API_KEY;
+  const apiKey = process.env.OPENROUTER_API_KEY;
   
   if (!apiKey) {
     return {
       success: false,
-      error: 'GROQ_API_KEY not configured',
-      provider: 'groq'
+      error: 'OPENROUTER_API_KEY not configured',
+      provider: 'openrouter'
     };
   }
 
   try {
-    const groq = new Groq({ apiKey });
-
-    const requestOptions = {
+    const requestBody = {
       model: MODEL,
       messages,
       max_tokens: MAX_TOKENS,
@@ -43,20 +42,41 @@ async function callWithTools({ messages, enableTools = true }) {
 
     // Add tools if enabled
     if (enableTools) {
-      requestOptions.tools = toOpenAIFormat();
-      requestOptions.tool_choice = 'auto';
+      requestBody.tools = toOpenAIFormat();
+      requestBody.tool_choice = 'auto';
     }
 
-    console.log(`[GROQ] Calling model: ${MODEL} with ${enableTools ? 'tools' : 'no tools'}`);
-    
-    const response = await groq.chat.completions.create(requestOptions);
+    console.log(`[OPENROUTER] Calling model: ${MODEL} with ${enableTools ? 'tools' : 'no tools'}`);
 
-    const choice = response.choices?.[0];
+    const response = await fetch(`${BASE_URL}/chat/completions`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
+        'HTTP-Referer': process.env.APP_URL || 'http://localhost:3001',
+        'X-Title': 'SAAI Platform'
+      },
+      body: JSON.stringify(requestBody)
+    });
+
+    if (!response.ok) {
+      const errorData = await response.text();
+      console.error(`[OPENROUTER] API error ${response.status}:`, errorData);
+      return {
+        success: false,
+        error: `OpenRouter API error: ${response.status} - ${errorData}`,
+        provider: 'openrouter'
+      };
+    }
+
+    const data = await response.json();
+    const choice = data.choices?.[0];
+
     if (!choice) {
       return {
         success: false,
-        error: 'No response from GROQ',
-        provider: 'groq'
+        error: 'No response from OpenRouter',
+        provider: 'openrouter'
       };
     }
 
@@ -71,15 +91,15 @@ async function callWithTools({ messages, enableTools = true }) {
       try {
         functionArgs = JSON.parse(toolCall.function?.arguments || '{}');
       } catch (parseError) {
-        console.warn('[GROQ] Failed to parse tool arguments:', parseError.message);
+        console.warn('[OPENROUTER] Failed to parse tool arguments:', parseError.message);
       }
 
-      console.log(`[GROQ] Tool call detected: ${functionName}`);
+      console.log(`[OPENROUTER] Tool call detected: ${functionName}`);
 
       return {
         success: true,
         type: 'tool',
-        provider: 'groq',
+        provider: 'openrouter',
         model: MODEL,
         text: message.content || '',
         toolCall: {
@@ -93,31 +113,24 @@ async function callWithTools({ messages, enableTools = true }) {
     return {
       success: true,
       type: 'message',
-      provider: 'groq',
+      provider: 'openrouter',
       model: MODEL,
       text: message.content || ''
     };
 
   } catch (error) {
-    console.error('[GROQ] Error:', error.message);
+    console.error('[OPENROUTER] Error:', error.message);
     
-    // Check for specific error types
-    if (error.message?.includes('tool_use_failed') || 
-        error.message?.includes('tool') ||
-        error.status === 400) {
-      console.warn('[GROQ] Tool calling failed, may need retry without tools');
-    }
-
     return {
       success: false,
       error: error.message,
-      provider: 'groq'
+      provider: 'openrouter'
     };
   }
 }
 
 /**
- * Call GROQ without tools (plain text generation)
+ * Call OpenRouter without tools (plain text generation)
  * Used for grounded explanation phase
  * 
  * @param {Array} messages - Conversation messages

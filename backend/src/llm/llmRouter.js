@@ -9,6 +9,7 @@
  */
 
 const groqProvider = require('./providers/groqProvider');
+const openRouterProvider = require('./providers/openRouterProvider');
 const geminiProvider = require('./providers/geminiProvider');
 const mistralProvider = require('./providers/mistralProvider');
 const mockProvider = require('./providers/mockProvider');
@@ -16,13 +17,14 @@ const mockProvider = require('./providers/mockProvider');
 // Provider mapping
 const providers = {
   groq: groqProvider,
+  openrouter: openRouterProvider,
   gemini: geminiProvider,
   mistral: mistralProvider,
   mock: mockProvider
 };
 
 // Default provider order (can be overridden by LLM_PRIORITY env var)
-const DEFAULT_PRIORITY = ['groq', 'gemini', 'mistral', 'mock'];
+const DEFAULT_PRIORITY = ['groq', 'openrouter', 'gemini', 'mistral', 'mock'];
 
 /**
  * Get provider priority order
@@ -232,6 +234,7 @@ async function runLLMPlain({ messages, preferredProvider }) {
 function getProviderStatus() {
   return {
     groq: !!process.env.GROQ_API_KEY,
+    openrouter: !!process.env.OPENROUTER_API_KEY,
     gemini: !!process.env.GEMINI_API_KEY,
     mistral: !!process.env.MISTRAL_API_KEY,
     mock: true
