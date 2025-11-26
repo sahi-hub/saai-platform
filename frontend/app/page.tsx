@@ -44,18 +44,42 @@ export default function Home() {
         const { theme: tenantTheme } = await loadTenantTheme(detectedTenant);
         setTheme(tenantTheme);
 
-        // Add welcome message after theme is loaded
-        setMessages([
-          {
-            id: '1',
-            content: `Hello! I'm SAAI, your AI assistant. I'm now connected to the backend and can help you with real actions. Try asking me to search for products, add items to your cart, get recommendations, or get support!`,
-            sender: 'saai',
-            timestamp: new Date().toLocaleTimeString('en-US', { 
-              hour: '2-digit', 
-              minute: '2-digit' 
-            })
-          }
-        ]);
+        // Get AI greeting from backend
+        try {
+          const greetingResponse = await sendChatMessage(
+            'Greet the user warmly. Introduce yourself briefly and mention 1-2 things you can help with.',
+            detectedTenant
+          );
+          
+          const greetingText = greetingResponse.llm?.text || 
+            "Hello! I'm SAAI, your AI assistant. How can I help you today?";
+          
+          setMessages([
+            {
+              id: '1',
+              content: greetingText,
+              sender: 'saai',
+              timestamp: new Date().toLocaleTimeString('en-US', { 
+                hour: '2-digit', 
+                minute: '2-digit' 
+              })
+            }
+          ]);
+        } catch (greetingError) {
+          console.warn('Failed to get AI greeting, using fallback:', greetingError);
+          // Fallback greeting if backend is unavailable
+          setMessages([
+            {
+              id: '1',
+              content: "Hello! I'm SAAI, your AI assistant. How can I help you today?",
+              sender: 'saai',
+              timestamp: new Date().toLocaleTimeString('en-US', { 
+                hour: '2-digit', 
+                minute: '2-digit' 
+              })
+            }
+          ]);
+        }
       } catch (error) {
         console.error('Failed to initialize tenant:', error);
         // Fallback to default

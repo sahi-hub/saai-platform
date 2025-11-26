@@ -321,9 +321,22 @@ async function runAction({ tenantConfig, actionRegistry, action, params = {} }) 
 
     console.log(`[tools] Action completed in ${executionTime}ms`);
 
+    // Normalize result structure for product-related actions
+    let normalizedResult = { ...result };
+    
+    // If this is a search/product action with 'results' array, normalize to 'items' format
+    if (action === 'search_products' && result.results && Array.isArray(result.results)) {
+      normalizedResult = {
+        type: 'recommendations', // Use same type for consistent UI handling
+        items: result.results,
+        totalFound: result.totalFound,
+        message: result.message
+      };
+    }
+
     // Add metadata to result
     const enrichedResult = {
-      ...result,
+      ...normalizedResult,
       _meta: {
         action,
         handler,
