@@ -20,12 +20,16 @@ const { loadActionRegistry } = require('../utils/registryLoader');
  * @param {Object} req.body - Request body
  * @param {string} req.body.message - User message (required)
  * @param {string} req.body.tenant - Tenant identifier (required)
- * @param {Array} [req.body.conversationHistory] - Optional conversation history
+ * @param {Array} [req.body.history] - Optional conversation history (preferred)
+ * @param {Array} [req.body.conversationHistory] - Optional conversation history (legacy alias)
  * @param {Object} res - Express response object
  */
 async function handleChat(req, res) {
   try {
-    const { tenant, message, conversationHistory = [] } = req.body;
+    const { tenant, message, conversationHistory = [], history = [] } = req.body;
+
+    // Support both 'history' and 'conversationHistory' field names
+    const chatHistory = history.length > 0 ? history : conversationHistory;
 
     // Validate required fields
     if (!tenant) {
@@ -48,7 +52,9 @@ async function handleChat(req, res) {
 
     console.log(`[Chat] Processing request for tenant: ${tenant}`);
     console.log(`[Chat] Message: "${message}"`);
-
+    if (chatHistory.length > 0) {
+      console.log(`[Chat] History: ${chatHistory.length} messages`);
+    }
     // Load tenant configuration with fallback
     const tenantConfig = await getEffectiveTenant(tenant);
 
@@ -66,7 +72,7 @@ async function handleChat(req, res) {
       tenantConfig,
       actionRegistry,
       userMessage: message,
-      conversationHistory
+      conversationHistory: chatHistory
     });
 
     console.log(`[Chat] Result type: ${result.type}`);

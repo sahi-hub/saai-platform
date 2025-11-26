@@ -156,7 +156,8 @@ async function runLLMOrchestrator({ tenantConfig, actionRegistry, userMessage, c
     action: actionName,
     params,
     toolResult,
-    provider: llmDecision.provider
+    provider: llmDecision.provider,
+    history: conversationHistory
   });
 
   return {
@@ -189,9 +190,10 @@ async function runLLMOrchestrator({ tenantConfig, actionRegistry, userMessage, c
  * @param {Object} options.params - Tool parameters
  * @param {Object} options.toolResult - Result from tool execution
  * @param {string} options.provider - Provider that made the tool decision
+ * @param {Array} [options.history] - Conversation history (for future use)
  * @returns {Promise<string>} Grounded explanation text
  */
-async function runGroundedExplanation({ tenantConfig, userMessage, action, params, toolResult, provider }) {
+async function runGroundedExplanation({ tenantConfig, userMessage, action, params, toolResult, provider, history = [] }) {
   console.log(`[Orchestrator] Generating grounded explanation for: ${action}`);
 
   let systemPrompt;
