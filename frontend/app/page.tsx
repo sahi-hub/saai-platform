@@ -169,9 +169,24 @@ export default function Home() {
           response.actionResult.type === 'outfit' &&
           response.actionResult.items) {
         
-        // Create outfit message
-        const outfitMessage: Message = {
-          id: (Date.now() + 1).toString(),
+        const newMessages: Message[] = [];
+        
+        // If groundedText is present, add it as a text bubble FIRST (above the outfit cards)
+        if (response.llm.groundedText) {
+          newMessages.push({
+            id: (Date.now() + 1).toString(),
+            content: response.llm.groundedText,
+            sender: 'saai',
+            timestamp: new Date().toLocaleTimeString('en-US', { 
+              hour: '2-digit', 
+              minute: '2-digit' 
+            })
+          });
+        }
+
+        // Create outfit message (after groundedText)
+        newMessages.push({
+          id: (Date.now() + 2).toString(),
           content: {
             type: 'outfit',
             items: response.actionResult.items
@@ -181,36 +196,36 @@ export default function Home() {
             hour: '2-digit', 
             minute: '2-digit' 
           })
-        };
+        });
 
-        setMessages((prev) => [...prev, outfitMessage]);
-
-        // If LLM also provided text, add it as a separate message
-        if (response.llm.text) {
-          const textMessage: Message = {
-            id: (Date.now() + 2).toString(),
-            content: response.llm.text,
-            sender: 'saai',
-            timestamp: new Date().toLocaleTimeString('en-US', { 
-              hour: '2-digit', 
-              minute: '2-digit' 
-            })
-          };
-          setMessages((prev) => [...prev, textMessage]);
-        }
+        setMessages((prev) => [...prev, ...newMessages]);
 
         return;
       }
 
       // Check if this is a recommendation response
       if (response.replyType === 'tool' && 
-          response.actionResult && 
-          response.actionResult.type === 'recommendations' &&
+          response.actionResult?.type === 'recommendations' &&
           Array.isArray(response.actionResult.items)) {
         
-        // Create recommendation message
-        const recommendationMessage: Message = {
-          id: (Date.now() + 1).toString(),
+        const newMessages: Message[] = [];
+        
+        // If groundedText is present, add it as a text bubble FIRST (above the product cards)
+        if (response.llm.groundedText) {
+          newMessages.push({
+            id: (Date.now() + 1).toString(),
+            content: response.llm.groundedText,
+            sender: 'saai',
+            timestamp: new Date().toLocaleTimeString('en-US', { 
+              hour: '2-digit', 
+              minute: '2-digit' 
+            })
+          });
+        }
+
+        // Create recommendation message (after groundedText)
+        newMessages.push({
+          id: (Date.now() + 2).toString(),
           content: {
             type: 'recommendations',
             items: response.actionResult.items
@@ -220,23 +235,9 @@ export default function Home() {
             hour: '2-digit', 
             minute: '2-digit' 
           })
-        };
+        });
 
-        setMessages((prev) => [...prev, recommendationMessage]);
-
-        // If LLM also provided text, add it as a separate message
-        if (response.llm.text) {
-          const textMessage: Message = {
-            id: (Date.now() + 2).toString(),
-            content: response.llm.text,
-            sender: 'saai',
-            timestamp: new Date().toLocaleTimeString('en-US', { 
-              hour: '2-digit', 
-              minute: '2-digit' 
-            })
-          };
-          setMessages((prev) => [...prev, textMessage]);
-        }
+        setMessages((prev) => [...prev, ...newMessages]);
 
         return;
       }

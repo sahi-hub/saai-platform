@@ -21,6 +21,7 @@ interface OutfitItems {
 // Support text messages, recommendations, and outfit messages
 type MessageContent = 
   | string 
+  | { type: 'text'; text: string; }
   | { type: 'recommendations'; items: ProductItem[]; }
   | { type: 'outfit'; items: OutfitItems; };
 
@@ -51,6 +52,7 @@ export default function MessageBubble({
   // Check message type
   const isRecommendation = typeof message === 'object' && message.type === 'recommendations';
   const isOutfit = typeof message === 'object' && message.type === 'outfit';
+  const isExplicitText = typeof message === 'object' && message.type === 'text';
 
   // If this is an outfit message, render OutfitBubble
   if (isOutfit && !isUser) {
@@ -110,7 +112,13 @@ export default function MessageBubble({
   }
 
   // For text messages, extract the string
-  const textMessage = typeof message === 'string' ? message : '';
+  // Handle both plain strings and explicit { type: 'text', text: '...' } format
+  let textMessage = '';
+  if (typeof message === 'string') {
+    textMessage = message;
+  } else if (isExplicitText && 'text' in message) {
+    textMessage = message.text;
+  }
 
   return (
     <div className={`flex ${isUser ? 'justify-end' : 'justify-start'}`}>

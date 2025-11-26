@@ -44,12 +44,15 @@ export interface ChatResponse {
   success: boolean;
   replyType: 'message' | 'tool';
   llm: {
-    type: 'message' | 'tool';
+    type?: 'message' | 'tool';
+    decision?: 'message' | 'tool';
     text?: string;
     action?: string;
     params?: Record<string, unknown>;
     reasoning?: string;
     provider?: string;
+    model?: string;
+    groundedText?: string; // Grounded explanation for tool results
     _meta?: {
       model?: string;
       usage?: {
@@ -59,7 +62,10 @@ export interface ChatResponse {
       };
     };
   };
-  actionResult?: Record<string, unknown>;
+  actionResult?: Record<string, unknown> & {
+    type?: string;
+    items?: unknown;
+  };
   tenantConfig?: Record<string, unknown>;
   actionRegistry?: Record<string, unknown>;
 }
