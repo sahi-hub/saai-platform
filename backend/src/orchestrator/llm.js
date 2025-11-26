@@ -1,492 +1,367 @@
 /**
- * SAAI LLM Orchestrator - Refactored
+ * SAAI LLM Orchestrator - Two-Stage Tool Calling
  * 
- * Multi-provider LLM interface with:
- * - TEXT-ONLY provider responses (no native tool calling)
- * - Internal keyword-based tool planner (determineTool)
- * - Provider fallback loop: GROQ -> GEMINI -> MISTRAL -> MOCK
- * - Graceful error handling (never crashes)
- */
-
-const Groq = require('groq-sdk');
-const { GoogleGenerativeAI } = require('@google/generative-ai');
-const Mistral = require('@mistralai/mistralai').default;
-
-// ============================================================================
-// CONFIGURATION
-// ============================================================================
-
-const PROVIDER_ORDER = ['groq', 'gemini', 'mistral', 'mock'];
-
-const PROVIDER_CONFIG = {
-  groq: {
-    model: 'llama-3.3-70b-versatile',
-    maxTokens: 4096,
-    temperature: 0.7
-  },
-  gemini: {
-    model: 'gemini-1.5-flash',
-    maxTokens: 4096,
-    temperature: 0.7
-  },
-  mistral: {
-    model: 'mistral-small-latest',
-    maxTokens: 4096,
-    temperature: 0.7
-  }
-};
-
-// ============================================================================
-// INTERNAL TOOL PLANNER - Keyword-based tool detection
-// ============================================================================
-
-/**
- * Determines if a message indicates a tool action should be executed
- * Uses keyword matching to detect user intent
+ * This orchestrator implements a two-stage LLM pipeline:
  * 
- * @param {string} messageString - The user's message or LLM response
- * @param {Object} actionRegistry - Registry of available actions
- * @returns {Object|null} - { action, params } or null if no tool detected
+ * Stage 1: Tool Decision
+ * - LLM receives user message + tool definitions
+ * - LLM decides: respond directly OR call a tool
+ * - Uses native tool calling (Groq/Gemini/Mistral)
+ * 
+ * Stage 2: Grounded Explanation
+ * - If tool was called, execute it (recommender/commerce)
+ * - Call LLM again with tool results
+ * - LLM generates response that ONLY mentions actual products
+ * - No hallucination - response is grounded in real data
+ * 
+ * Provider fallback: GROQ → GEMINI → MISTRAL → MOCK
  */
-function determineTool(messageString, actionRegistry = {}) {
-  if (!messageString || typeof messageString !== 'string') {
-    return null;
-  }
 
-  const lower = messageString.toLowerCase().trim();
-
-  // -------------------------------------------------------------------------
-  // OUTFIT INTENT (check first - more specific than general recommend)
-  // -------------------------------------------------------------------------
-  const outfitPatterns = [
-    'outfit', 'dress me', 'complete look', 'what should i wear',
-    'what to wear', 'style me', 'put together', 'coordinate',
-    'match with', 'goes with', 'pair with', 'combine with',
-    'full look', 'entire outfit', 'wardrobe'
-  ];
-
-  for (const pattern of outfitPatterns) {
-    if (lower.includes(pattern)) {
-      if (actionRegistry.recommend_outfit?.enabled !== false) {
-        return { action: 'recommend_outfit', params: { query: messageString } };
-      }
-      if (actionRegistry['recommender.outfit']?.enabled !== false) {
-        return { action: 'recommender.outfit', params: { query: messageString } };
-      }
-    }
-  }
-
-  // -------------------------------------------------------------------------
-  // RECOMMENDATION INTENT
-  // -------------------------------------------------------------------------
-  const recommendPatterns = [
-    'recommend', 'suggest', 'show me', 'find me', 'looking for',
-    'need a', 'want a', 'search for', 'browse', 'discover',
-    'what do you have', 'any products', 'something similar',
-    'alternatives', 'options for'
-  ];
-
-  for (const pattern of recommendPatterns) {
-    if (lower.includes(pattern)) {
-      if (actionRegistry.recommend_products?.enabled !== false) {
-        return { action: 'recommend_products', params: { query: messageString } };
-      }
-      if (actionRegistry['recommender.recommend']?.enabled !== false) {
-        return { action: 'recommender.recommend', params: { query: messageString } };
-      }
-    }
-  }
-
-  // -------------------------------------------------------------------------
-  // ADD TO CART INTENT
-  // -------------------------------------------------------------------------
-  const cartAddPatterns = [
-    'add to cart', 'add to my cart', 'add this to cart',
-    'put in cart', 'add to basket', 'buy this', 'purchase this',
-    'i want this', "i'll take", 'get this'
-  ];
-
-  for (const pattern of cartAddPatterns) {
-    if (lower.includes(pattern)) {
-      const productId = extractProductId(messageString);
-      if (actionRegistry.add_to_cart?.enabled !== false ||
-          actionRegistry['commerce.addToCart']?.enabled !== false) {
-        return {
-          action: actionRegistry.add_to_cart ? 'add_to_cart' : 'commerce.addToCart',
-          params: { productId: productId || 'unknown' }
-        };
-      }
-    }
-  }
-
-  // -------------------------------------------------------------------------
-  // VIEW CART INTENT
-  // -------------------------------------------------------------------------
-  const viewCartPatterns = [
-    'view cart', 'show cart', 'my cart', "what's in my cart",
-    'cart contents', 'see cart', 'check cart'
-  ];
-
-  for (const pattern of viewCartPatterns) {
-    if (lower.includes(pattern)) {
-      if (actionRegistry.view_cart?.enabled !== false ||
-          actionRegistry['commerce.viewCart']?.enabled !== false) {
-        return {
-          action: actionRegistry.view_cart ? 'view_cart' : 'commerce.viewCart',
-          params: {}
-        };
-      }
-    }
-  }
-
-  // -------------------------------------------------------------------------
-  // CHECKOUT INTENT
-  // -------------------------------------------------------------------------
-  const checkoutPatterns = [
-    'checkout', 'check out', 'pay now', 'complete order',
-    'place order', 'finish purchase', 'buy now'
-  ];
-
-  for (const pattern of checkoutPatterns) {
-    if (lower.includes(pattern)) {
-      if (actionRegistry.checkout?.enabled !== false ||
-          actionRegistry['commerce.checkout']?.enabled !== false) {
-        return {
-          action: actionRegistry.checkout ? 'checkout' : 'commerce.checkout',
-          params: {}
-        };
-      }
-    }
-  }
-
-  // No tool detected
-  return null;
-}
-
-/**
- * Extract product ID from message string
- */
-function extractProductId(message) {
-  if (!message) return null;
-
-  const patterns = [
-    /product[_-]?id[:\s]*([a-zA-Z0-9_-]+)/i,
-    /product[:\s]*#?([a-zA-Z0-9_-]+)/i,
-    /id[:\s]*([a-zA-Z0-9_-]+)/i,
-    /#([a-zA-Z0-9_-]+)/,
-    /\b([a-zA-Z0-9_-]{8,})\b/
-  ];
-
-  for (const pattern of patterns) {
-    const match = message.match(pattern);
-    if (match && match[1]) {
-      return match[1];
-    }
-  }
-
-  return null;
-}
+const { runLLMWithTools, runLLMPlain, buildMessages } = require('../llm/llmRouter');
+const { runAction } = require('./tools');
 
 // ============================================================================
-// PROVIDER DRIVERS - Text-only responses (NO native tool calling)
+// SYSTEM PROMPTS
+// ============================================================================
+
+const TOOL_DECISION_PROMPT = `You are SAAI, an AI sales assistant for a fashion and lifestyle store.
+
+You have access to tools to help customers:
+- search_products: Search for products by query
+- recommend_products: Recommend products based on preferences
+- recommend_outfit: Recommend a complete outfit (shirt + pant + shoe)
+- add_to_cart: Add a product to the shopping cart
+
+WHEN TO USE TOOLS:
+- Use recommend_outfit when the user asks for: outfit, complete look, what to wear, dress me, style me, full look
+- Use recommend_products when the user asks for: recommendations, suggestions, "show me", "find me", looking for something
+- Use search_products when the user wants to: search, browse, find specific items
+- Use add_to_cart when the user wants to: add to cart, buy this, get this
+
+WHEN NOT TO USE TOOLS:
+- Greetings (hello, hi, hey)
+- Thank you messages
+- General questions about the store
+- Questions about shipping, returns, etc.
+
+Be helpful, friendly, and proactive in assisting customers.`;
+
+const GROUNDED_OUTFIT_PROMPT = `You are SAAI, a shopping assistant. You MUST ONLY talk about the exact products I give you.
+
+CRITICAL RULES:
+1. DO NOT invent, imagine, or mention ANY products not listed below
+2. DO NOT add extra items like accessories, bags, watches unless they are listed
+3. ONLY describe the shirt, pant, and shoe I provide
+4. Use the exact product names provided
+5. Keep your response concise and natural`;
+
+const GROUNDED_PRODUCTS_PROMPT = `You are SAAI, a shopping assistant. You MUST ONLY talk about the exact products I give you.
+
+CRITICAL RULES:
+1. DO NOT invent, imagine, or mention ANY products not in the list below
+2. ONLY describe products from the list I provide
+3. Use the exact product names provided
+4. Keep your response concise and helpful`;
+
+// ============================================================================
+// MAIN ORCHESTRATOR FUNCTION
 // ============================================================================
 
 /**
- * Call GROQ LLM - Returns plain text only
- */
-async function callGroqLLM(messages, systemPrompt) {
-  const apiKey = process.env.GROQ_API_KEY;
-  if (!apiKey) {
-    return { success: false, error: 'GROQ_API_KEY not configured' };
-  }
-
-  try {
-    const groq = new Groq({ apiKey });
-
-    const formattedMessages = [];
-
-    if (systemPrompt) {
-      formattedMessages.push({ role: 'system', content: systemPrompt });
-    }
-
-    for (const msg of messages) {
-      formattedMessages.push({
-        role: msg.role === 'assistant' ? 'assistant' : 'user',
-        content: msg.content || ''
-      });
-    }
-
-    const response = await groq.chat.completions.create({
-      model: PROVIDER_CONFIG.groq.model,
-      messages: formattedMessages,
-      max_tokens: PROVIDER_CONFIG.groq.maxTokens,
-      temperature: PROVIDER_CONFIG.groq.temperature
-    });
-
-    const content = response.choices?.[0]?.message?.content || '';
-
-    return {
-      success: true,
-      content: content.trim(),
-      provider: 'groq',
-      model: PROVIDER_CONFIG.groq.model
-    };
-
-  } catch (error) {
-    console.error('[LLM] GROQ error:', error.message);
-    return { success: false, error: error.message, provider: 'groq' };
-  }
-}
-
-/**
- * Call Gemini LLM - Returns plain text only (uses v1 API)
- */
-async function callGeminiLLM(messages, systemPrompt) {
-  const apiKey = process.env.GEMINI_API_KEY;
-  if (!apiKey) {
-    return { success: false, error: 'GEMINI_API_KEY not configured' };
-  }
-
-  try {
-    const genAI = new GoogleGenerativeAI(apiKey);
-    const model = genAI.getGenerativeModel({ model: PROVIDER_CONFIG.gemini.model });
-
-    const parts = [];
-
-    if (systemPrompt) {
-      parts.push({ text: 'System: ' + systemPrompt + '\n\n' });
-    }
-
-    for (const msg of messages) {
-      const role = msg.role === 'assistant' ? 'Assistant' : 'User';
-      parts.push({ text: role + ': ' + (msg.content || '') + '\n' });
-    }
-
-    parts.push({ text: 'Assistant: ' });
-
-    const result = await model.generateContent({
-      contents: [{ parts }],
-      generationConfig: {
-        maxOutputTokens: PROVIDER_CONFIG.gemini.maxTokens,
-        temperature: PROVIDER_CONFIG.gemini.temperature
-      }
-    });
-
-    const response = result.response;
-    const content = response.text() || '';
-
-    return {
-      success: true,
-      content: content.trim(),
-      provider: 'gemini',
-      model: PROVIDER_CONFIG.gemini.model
-    };
-
-  } catch (error) {
-    console.error('[LLM] Gemini error:', error.message);
-    return { success: false, error: error.message, provider: 'gemini' };
-  }
-}
-
-/**
- * Call Mistral LLM - Returns plain text only
- */
-async function callMistralLLM(messages, systemPrompt) {
-  const apiKey = process.env.MISTRAL_API_KEY;
-  if (!apiKey) {
-    return { success: false, error: 'MISTRAL_API_KEY not configured' };
-  }
-
-  try {
-    const mistral = new Mistral({ apiKey });
-
-    const formattedMessages = [];
-
-    if (systemPrompt) {
-      formattedMessages.push({ role: 'system', content: systemPrompt });
-    }
-
-    for (const msg of messages) {
-      formattedMessages.push({
-        role: msg.role === 'assistant' ? 'assistant' : 'user',
-        content: msg.content || ''
-      });
-    }
-
-    const response = await mistral.chat.complete({
-      model: PROVIDER_CONFIG.mistral.model,
-      messages: formattedMessages,
-      maxTokens: PROVIDER_CONFIG.mistral.maxTokens,
-      temperature: PROVIDER_CONFIG.mistral.temperature
-    });
-
-    const content = response.choices?.[0]?.message?.content || '';
-
-    return {
-      success: true,
-      content: content.trim(),
-      provider: 'mistral',
-      model: PROVIDER_CONFIG.mistral.model
-    };
-
-  } catch (error) {
-    console.error('[LLM] Mistral error:', error.message);
-    return { success: false, error: error.message, provider: 'mistral' };
-  }
-}
-
-/**
- * Mock LLM - Pattern matching fallback (always works)
- */
-async function callMockLLM(messages, systemPrompt) {
-  const lastMessage = messages[messages.length - 1]?.content || '';
-  const lower = lastMessage.toLowerCase();
-
-  let content = '';
-
-  if (lower.includes('outfit') || lower.includes('wear')) {
-    content = "I'd be happy to help you create a complete outfit! Let me put together some coordinated pieces that would work well together based on your preferences.";
-  } else if (lower.includes('recommend') || lower.includes('suggest') || lower.includes('show')) {
-    content = "I'd love to recommend some products for you! Based on what you're looking for, let me find some great options.";
-  } else if (lower.includes('cart')) {
-    content = 'I can help you with your shopping cart. What would you like to do?';
-  } else if (lower.includes('hello') || lower.includes('hi') || lower.includes('hey')) {
-    content = "Hello! I'm your AI shopping assistant. How can I help you today? I can recommend products, create outfits, or help you find what you're looking for.";
-  } else if (lower.includes('thank')) {
-    content = "You're welcome! Is there anything else I can help you with?";
-  } else if (lower.includes('help')) {
-    content = "I'm here to help! I can:\n- Recommend products based on your preferences\n- Create complete outfit suggestions\n- Help you find specific items\n- Manage your shopping cart\n\nWhat would you like to do?";
-  } else {
-    content = "I understand you're interested in shopping. Would you like me to recommend some products or help you find something specific?";
-  }
-
-  return {
-    success: true,
-    content: content,
-    provider: 'mock',
-    model: 'mock-v1'
-  };
-}
-
-// ============================================================================
-// MAIN LLM ORCHESTRATOR
-// ============================================================================
-
-/**
- * Run LLM with provider fallback loop
+ * Run the two-stage LLM orchestration
  * 
  * @param {Object} options
- * @param {Array} options.messages - Conversation messages
- * @param {string} options.systemPrompt - System prompt
+ * @param {Object} options.tenantConfig - Tenant configuration
  * @param {Object} options.actionRegistry - Available actions
- * @param {string} options.preferredProvider - Preferred provider (optional)
- * @returns {Object} - { type: 'tool'|'message', ... }
+ * @param {string} options.userMessage - User's message
+ * @param {Array} [options.conversationHistory] - Previous messages
+ * @returns {Promise<Object>} Orchestration result
  */
-async function runLLM({
-  messages = [],
-  systemPrompt = '',
-  actionRegistry = {},
-  preferredProvider = null
-}) {
-  let providers = [...PROVIDER_ORDER];
-  if (preferredProvider && PROVIDER_ORDER.includes(preferredProvider)) {
-    providers = [preferredProvider, ...PROVIDER_ORDER.filter(p => p !== preferredProvider)];
+async function runLLMOrchestrator({ tenantConfig, actionRegistry, userMessage, conversationHistory = [] }) {
+  console.log('[Orchestrator] Starting two-stage LLM pipeline');
+  console.log(`[Orchestrator] User message: "${userMessage}"`);
+
+  // Build system prompt with tenant customization
+  const systemPrompt = buildSystemPrompt(tenantConfig);
+
+  // Build messages for Stage 1
+  const messages = buildMessages({
+    systemPrompt,
+    userMessage,
+    conversationHistory
+  });
+
+  // =========================================================================
+  // STAGE 1: Tool Decision
+  // =========================================================================
+  console.log('[Orchestrator] Stage 1: Tool Decision');
+
+  const llmDecision = await runLLMWithTools({
+    messages,
+    tenantConfig,
+    actionRegistry
+  });
+
+  console.log(`[Orchestrator] LLM decision: ${llmDecision.decision}`);
+
+  // If LLM decided to just respond (no tool)
+  if (llmDecision.decision === 'message') {
+    return {
+      type: 'message',
+      provider: llmDecision.provider,
+      model: llmDecision.model,
+      text: llmDecision.text
+    };
   }
 
-  const enhancedSystemPrompt = systemPrompt + '\n\nIMPORTANT: When the user asks for product recommendations, outfit suggestions, or wants to perform shopping actions, respond naturally while clearly expressing the intent. Always be helpful, conversational, and focused on assisting with shopping needs.';
+  // =========================================================================
+  // TOOL EXECUTION
+  // =========================================================================
+  const { tool } = llmDecision;
+  const actionName = tool.name;
+  const params = tool.arguments || {};
 
-  let lastError = null;
-  let llmResponse = null;
+  console.log(`[Orchestrator] Executing tool: ${actionName}`);
+  console.log(`[Orchestrator] Tool params:`, params);
 
-  for (const provider of providers) {
-    console.log('[LLM] Trying provider: ' + provider);
+  let toolResult;
+  try {
+    toolResult = await runAction({
+      tenantConfig,
+      actionRegistry,
+      action: actionName,
+      params
+    });
+    console.log(`[Orchestrator] Tool executed successfully`);
+  } catch (actionError) {
+    console.error(`[Orchestrator] Tool execution failed:`, actionError.message);
+    // Return LLM's text as fallback
+    return {
+      type: 'message',
+      provider: llmDecision.provider,
+      model: llmDecision.model,
+      text: llmDecision.text || "I tried to help with that but encountered an issue. Could you try again?",
+      error: actionError.message
+    };
+  }
 
-    try {
-      switch (provider) {
-        case 'groq':
-          llmResponse = await callGroqLLM(messages, enhancedSystemPrompt);
-          break;
-        case 'gemini':
-          llmResponse = await callGeminiLLM(messages, enhancedSystemPrompt);
-          break;
-        case 'mistral':
-          llmResponse = await callMistralLLM(messages, enhancedSystemPrompt);
-          break;
-        case 'mock':
-          llmResponse = await callMockLLM(messages, enhancedSystemPrompt);
-          break;
-        default:
-          continue;
-      }
+  // =========================================================================
+  // STAGE 2: Grounded Explanation
+  // =========================================================================
+  console.log('[Orchestrator] Stage 2: Grounded Explanation');
 
-      if (llmResponse.success) {
-        console.log('[LLM] Success with provider: ' + provider);
-        break;
-      } else {
-        console.log('[LLM] Provider ' + provider + ' failed: ' + llmResponse.error);
-        lastError = llmResponse.error;
-      }
-    } catch (error) {
-      console.error('[LLM] Provider ' + provider + ' threw error:', error.message);
-      lastError = error.message;
+  const groundedText = await runGroundedExplanation({
+    tenantConfig,
+    userMessage,
+    action: actionName,
+    params,
+    toolResult,
+    provider: llmDecision.provider
+  });
+
+  return {
+    type: 'tool_result',
+    provider: llmDecision.provider,
+    model: llmDecision.model,
+    action: actionName,
+    params,
+    toolResult,
+    groundedText
+  };
+}
+
+// ============================================================================
+// GROUNDED EXPLANATION GENERATOR
+// ============================================================================
+
+/**
+ * Generate a grounded explanation based on tool results
+ * 
+ * The LLM is called again with:
+ * - Original user message
+ * - Actual tool results (products/outfit)
+ * - Strict instructions to ONLY mention these products
+ * 
+ * @param {Object} options
+ * @param {Object} options.tenantConfig - Tenant configuration
+ * @param {string} options.userMessage - Original user message
+ * @param {string} options.action - Tool/action that was executed
+ * @param {Object} options.params - Tool parameters
+ * @param {Object} options.toolResult - Result from tool execution
+ * @param {string} options.provider - Provider that made the tool decision
+ * @returns {Promise<string>} Grounded explanation text
+ */
+async function runGroundedExplanation({ tenantConfig, userMessage, action, params, toolResult, provider }) {
+  console.log(`[Orchestrator] Generating grounded explanation for: ${action}`);
+
+  let systemPrompt;
+  let userPrompt;
+
+  // Build prompts based on action type
+  if (action === 'recommend_outfit') {
+    systemPrompt = GROUNDED_OUTFIT_PROMPT;
+    userPrompt = buildOutfitPrompt(userMessage, toolResult);
+  } else if (action === 'recommend_products' || action === 'search_products') {
+    systemPrompt = GROUNDED_PRODUCTS_PROMPT;
+    userPrompt = buildProductsPrompt(userMessage, toolResult);
+  } else if (action === 'add_to_cart') {
+    // For cart actions, generate simple confirmation
+    return generateCartConfirmation(params, toolResult);
+  } else {
+    // For unknown actions, return generic confirmation
+    return `I've completed that action for you. Is there anything else you'd like help with?`;
+  }
+
+  const messages = [
+    { role: 'system', content: systemPrompt },
+    { role: 'user', content: userPrompt }
+  ];
+
+  // Call LLM for grounded response (no tools)
+  const result = await runLLMPlain({
+    messages,
+    preferredProvider: provider
+  });
+
+  if (result.success && result.text) {
+    return result.text;
+  }
+
+  // Fallback: generate a simple response
+  return generateFallbackExplanation(action, toolResult);
+}
+
+// ============================================================================
+// PROMPT BUILDERS
+// ============================================================================
+
+/**
+ * Build prompt for outfit explanation
+ */
+function buildOutfitPrompt(userMessage, toolResult) {
+  const outfit = toolResult.items || toolResult;
+  
+  let prompt = `User asked: "${userMessage}"\n\n`;
+  prompt += `Here is the outfit I've selected from our catalog. ONLY talk about these exact items:\n\n`;
+
+  if (outfit.shirt) {
+    const s = outfit.shirt;
+    prompt += `SHIRT: ${s.name}\n`;
+    prompt += `  - Price: ₹${s.price}\n`;
+    prompt += `  - Colors: ${(s.colors || []).join(', ')}\n`;
+    prompt += `  - Tags: ${(s.tags || []).join(', ')}\n\n`;
+  }
+
+  if (outfit.pant) {
+    const p = outfit.pant;
+    prompt += `PANT: ${p.name}\n`;
+    prompt += `  - Price: ₹${p.price}\n`;
+    prompt += `  - Colors: ${(p.colors || []).join(', ')}\n`;
+    prompt += `  - Tags: ${(p.tags || []).join(', ')}\n\n`;
+  }
+
+  if (outfit.shoe) {
+    const sh = outfit.shoe;
+    prompt += `SHOE: ${sh.name}\n`;
+    prompt += `  - Price: ₹${sh.price}\n`;
+    prompt += `  - Colors: ${(sh.colors || []).join(', ')}\n`;
+    prompt += `  - Tags: ${(sh.tags || []).join(', ')}\n\n`;
+  }
+
+  prompt += `Write a short, friendly message (2-3 sentences) explaining why this outfit works well for the user's request. `;
+  prompt += `Mention the products by their exact names. DO NOT recommend any additional items.`;
+
+  return prompt;
+}
+
+/**
+ * Build prompt for products explanation
+ */
+function buildProductsPrompt(userMessage, toolResult) {
+  const products = toolResult.items || toolResult.products || [];
+  
+  let prompt = `User asked: "${userMessage}"\n\n`;
+  prompt += `Here are the products I found. ONLY talk about these exact items:\n\n`;
+
+  const topProducts = products.slice(0, 5); // Limit to top 5 for context
+  
+  topProducts.forEach((p, i) => {
+    prompt += `${i + 1}. ${p.name}\n`;
+    prompt += `   - Price: ₹${p.price}\n`;
+    prompt += `   - Category: ${p.category}\n`;
+    prompt += `   - Colors: ${(p.colors || []).join(', ')}\n`;
+    prompt += `   - Tags: ${(p.tags || []).join(', ')}\n\n`;
+  });
+
+  prompt += `Write a short, helpful message (2-3 sentences) introducing these products to the user. `;
+  prompt += `Mention 2-3 products by their exact names. DO NOT recommend any products not in this list.`;
+
+  return prompt;
+}
+
+/**
+ * Generate cart confirmation message
+ */
+function generateCartConfirmation(params, toolResult) {
+  const productId = params.productId || 'the item';
+  const quantity = params.quantity || 1;
+  
+  if (toolResult.success === false) {
+    return `I couldn't add that item to your cart. ${toolResult.message || 'Please try again.'}`;
+  }
+
+  return `I've added ${quantity > 1 ? quantity + ' of ' : ''}${productId} to your cart! Would you like to continue shopping or proceed to checkout?`;
+}
+
+/**
+ * Generate fallback explanation when LLM call fails
+ */
+function generateFallbackExplanation(action, toolResult) {
+  if (action === 'recommend_outfit') {
+    const outfit = toolResult.items || toolResult;
+    const parts = [];
+    if (outfit.shirt) parts.push(outfit.shirt.name);
+    if (outfit.pant) parts.push(outfit.pant.name);
+    if (outfit.shoe) parts.push(outfit.shoe.name);
+    
+    if (parts.length > 0) {
+      return `I've put together a great outfit for you: ${parts.join(', ')}. These pieces work well together for your occasion!`;
     }
   }
 
-  if (!llmResponse || !llmResponse.success) {
-    console.error('[LLM] All providers failed, returning graceful message');
-    return {
-      type: 'message',
-      text: "I apologize, but I'm having trouble connecting right now. Please try again in a moment.",
-      provider: 'fallback',
-      error: lastError
-    };
+  if (action === 'recommend_products' || action === 'search_products') {
+    const products = toolResult.items || toolResult.products || [];
+    if (products.length > 0) {
+      const topNames = products.slice(0, 3).map(p => p.name);
+      return `I found some great options for you including ${topNames.join(', ')}. Take a look!`;
+    }
   }
 
-  const userMessage = messages[messages.length - 1]?.content || '';
-  const combinedText = userMessage + ' ' + llmResponse.content;
-
-  const toolIntent = determineTool(combinedText, actionRegistry);
-
-  if (toolIntent) {
-    console.log('[LLM] Tool detected: ' + toolIntent.action);
-    return {
-      type: 'tool',
-      action: toolIntent.action,
-      params: toolIntent.params,
-      text: llmResponse.content,
-      provider: llmResponse.provider,
-      model: llmResponse.model
-    };
-  }
-
-  return {
-    type: 'message',
-    text: llmResponse.content,
-    provider: llmResponse.provider,
-    model: llmResponse.model
-  };
+  return `I've found some options that might interest you. Let me know if you'd like more details!`;
 }
 
 // ============================================================================
 // UTILITY FUNCTIONS
 // ============================================================================
 
+/**
+ * Build system prompt with tenant customization
+ */
 function buildSystemPrompt(tenantConfig) {
-  const brandName = tenantConfig?.settings?.brandName || 'Store';
+  const brandName = tenantConfig?.settings?.brandName || 'our store';
   const brandVoice = tenantConfig?.settings?.brandVoice || 'friendly and helpful';
-  const productCategories = tenantConfig?.settings?.productCategories || [];
-
-  let prompt = 'You are a helpful AI shopping assistant for ' + brandName + '. Your tone is ' + brandVoice + '.';
-
-  if (productCategories.length > 0) {
-    prompt += '\n\nWe specialize in: ' + productCategories.join(', ') + '.';
-  }
-
-  prompt += '\n\nYour role is to:\n- Help customers find products they will love\n- Create outfit recommendations when asked\n- Answer questions about products and shopping\n- Guide customers through their shopping journey\n\nBe concise, helpful, and personable.';
-
+  
+  let prompt = TOOL_DECISION_PROMPT;
+  
+  // Add tenant customization
+  prompt += `\n\nYou are assisting customers of ${brandName}. Your tone should be ${brandVoice}.`;
+  
   return prompt;
 }
 
+/**
+ * Get provider status
+ */
 function getProviderStatus() {
   return {
     groq: !!process.env.GROQ_API_KEY,
@@ -496,11 +371,14 @@ function getProviderStatus() {
   };
 }
 
+/**
+ * Health check
+ */
 function healthCheck() {
   const status = getProviderStatus();
   const available = Object.entries(status)
     .filter(([_, v]) => v)
-    .map(([k, _]) => k);
+    .map(([k]) => k);
 
   return {
     healthy: available.length > 0,
@@ -514,16 +392,9 @@ function healthCheck() {
 // ============================================================================
 
 module.exports = {
-  runLLM,
-  determineTool,
-  extractProductId,
-  callGroqLLM,
-  callGeminiLLM,
-  callMistralLLM,
-  callMockLLM,
+  runLLMOrchestrator,
+  runGroundedExplanation,
   buildSystemPrompt,
   getProviderStatus,
-  healthCheck,
-  PROVIDER_ORDER,
-  PROVIDER_CONFIG
+  healthCheck
 };
