@@ -24,9 +24,8 @@ const { runAction } = require('./tools');
 // SYSTEM PROMPTS
 // ============================================================================
 
-const TOOL_DECISION_PROMPT = `You are SAAI, an AI sales assistant for a fashion and lifestyle store.
-
-You have access to tools to help customers:
+// Default tool instructions (used as base, persona is layered on top)
+const TOOL_INSTRUCTIONS = `You have access to tools to help customers:
 - search_products: Search for products by query
 - recommend_products: Recommend products based on preferences
 - recommend_outfit: Recommend a complete outfit (shirt + pant + shoe)
@@ -35,7 +34,7 @@ You have access to tools to help customers:
 - checkout: Complete purchase and create order
 
 WHEN TO USE TOOLS:
-- Use recommend_outfit when the user asks for: outfit, complete look, what to wear, dress me, style me, full look
+- Use recommend_outfit when the user asks for: outfit, complete look, what to wear, dress me, style me, full look, occasion outfit
 - Use recommend_products when the user asks for: recommendations, suggestions, "show me", "find me", looking for something
 - Use search_products when the user wants to: search, browse, find specific items
 - Use add_to_cart when the user wants to: add to cart, buy this, get this
@@ -46,22 +45,17 @@ WHEN NOT TO USE TOOLS:
 - Greetings (hello, hi, hey)
 - Thank you messages
 - General questions about the store
-- Questions about shipping, returns, etc.
+- Questions about shipping, returns, etc.`;
 
-Be helpful, friendly, and proactive in assisting customers.`;
-
-const GROUNDED_OUTFIT_PROMPT = `You are SAAI, a shopping assistant. You MUST ONLY talk about the exact products I give you.
-
-CRITICAL RULES:
+// Grounded prompt templates (persona is prepended dynamically)
+const GROUNDED_OUTFIT_RULES = `CRITICAL RULES:
 1. DO NOT invent, imagine, or mention ANY products not listed below
 2. DO NOT add extra items like accessories, bags, watches unless they are listed
 3. ONLY describe the shirt, pant, and shoe I provide
 4. Use the exact product names provided
 5. Keep your response concise and natural`;
 
-const GROUNDED_PRODUCTS_PROMPT = `You are SAAI, a shopping assistant. You MUST ONLY talk about the exact products I give you.
-
-CRITICAL RULES:
+const GROUNDED_PRODUCTS_RULES = `CRITICAL RULES:
 1. DO NOT invent, imagine, or mention ANY products not in the list below
 2. ONLY describe products from the list I provide
 3. Use the exact product names provided
@@ -214,14 +208,20 @@ async function runGroundedExplanation({ tenantConfig, userMessage, action, param
 
   // Build prompts based on action type
   if (action === 'recommend_outfit') {
-    systemPrompt = GROUNDED_OUTFIT_PROMPT;
-    userPrompt = buildOutfitPrompt(userMessage, toolResult);
+    systemPrompt = buildGroundedSystemPrompt(tenantConfig, GROUNDED_OUTFIT_RULES);
+    userPrompt = buildOutfitPrompt(userMessage, toolResult, tenantConfig);
   } else if (action === 'recommend_products' || action === 'search_products') {
-    systemPrompt = GROUNDED_PRODUCTS_PROMPT;
-    userPrompt = buildProductsPrompt(userMessage, toolResult);
+    systemPrompt = buildGroundedSystemPrompt(tenantConfig, GROUNDED_PRODUCTS_RULES);
+    userPrompt = buildProductsPrompt(userMessage, toolResult, tenantConfig);
   } else if (action === 'add_to_cart') {
     // For cart actions, generate simple confirmation
     return generateCartConfirmation(params, toolResult);
+  } else if (action === 'view_cart') {
+    // For view cart, generate cart summary
+    return generateCartSummary(toolResult);
+  } else if (action === 'checkout') {
+    // For checkout, generate order confirmation
+    return generateCheckoutConfirmation(toolResult);
   } else {
     // For unknown actions, return generic confirmation
     return `I've completed that action for you. Is there anything else you'd like help with?`;
@@ -253,10 +253,14 @@ async function runGroundedExplanation({ tenantConfig, userMessage, action, param
 /**
  * Build prompt for outfit explanation
  */
-function buildOutfitPrompt(userMessage, toolResult) {
+function buildOutfitPrompt(userMessage, toolResult, tenantConfig) {
   const outfit = toolResult.items || toolResult;
   
   let prompt = `User asked: "${userMessage}"\n\n`;
+  
+  // Add event/occasion instruction
+  prompt += `INSTRUCTION: If the user asked about an event or occasion (like eid, wedding, office, party, casual, travel), explicitly tie the outfit to that event and explain how it fits (e.g., color, formality, comfort, style). Still do NOT invent new products.\n\n`;
+  
   prompt += `Here is the outfit I've selected from our catalog. ONLY talk about these exact items:\n\n`;
 
   if (outfit.shirt) {
@@ -284,7 +288,8 @@ function buildOutfitPrompt(userMessage, toolResult) {
   }
 
   prompt += `Write a short, friendly message (2-3 sentences) explaining why this outfit works well for the user's request. `;
-  prompt += `Mention the products by their exact names. DO NOT recommend any additional items.`;
+  prompt += `Mention the products by their exact names. Explain WHY these pieces work together (color coordination, style, occasion fit). `;
+  prompt += `DO NOT recommend any additional items not listed above.`;
 
   return prompt;
 }
@@ -292,7 +297,7 @@ function buildOutfitPrompt(userMessage, toolResult) {
 /**
  * Build prompt for products explanation
  */
-function buildProductsPrompt(userMessage, toolResult) {
+function buildProductsPrompt(userMessage, toolResult, tenantConfig) {
   const products = toolResult.items || toolResult.products || [];
   
   let prompt = `User asked: "${userMessage}"\n\n`;
@@ -300,16 +305,22 @@ function buildProductsPrompt(userMessage, toolResult) {
 
   const topProducts = products.slice(0, 5); // Limit to top 5 for context
   
-  topProducts.forEach((p, i) => {
-    prompt += `${i + 1}. ${p.name}\n`;
+  for (const [index, p] of topProducts.entries()) {
+    prompt += `${index + 1}. ${p.name}\n`;
     prompt += `   - Price: ₹${p.price}\n`;
     prompt += `   - Category: ${p.category}\n`;
     prompt += `   - Colors: ${(p.colors || []).join(', ')}\n`;
     prompt += `   - Tags: ${(p.tags || []).join(', ')}\n\n`;
-  });
+  }
 
   prompt += `Write a short, helpful message (2-3 sentences) introducing these products to the user. `;
-  prompt += `Mention 2-3 products by their exact names. DO NOT recommend any products not in this list.`;
+  prompt += `Mention 2-3 products by their exact names and briefly explain why they fit the user's request. `;
+  prompt += `DO NOT recommend any products not in this list.\n\n`;
+  
+  // Cross-sell hint
+  prompt += `CROSS-SELL HINT: If it makes sense, you may suggest exactly ONE additional complementary item type `;
+  prompt += `(like a belt, watch, or socks) conceptually, but do not mention a specific product name unless it is in the list above. `;
+  prompt += `Keep the main answer focused on the products listed.`;
 
   return prompt;
 }
@@ -326,6 +337,45 @@ function generateCartConfirmation(params, toolResult) {
   }
 
   return `I've added ${quantity > 1 ? quantity + ' of ' : ''}${productId} to your cart! Would you like to continue shopping or proceed to checkout?`;
+}
+
+/**
+ * Generate cart summary message
+ */
+function generateCartSummary(toolResult) {
+  if (!toolResult.success || !toolResult.cart || toolResult.cart.length === 0) {
+    return `Your cart is currently empty. Would you like me to help you find some products?`;
+  }
+
+  const cart = toolResult.cart;
+  const summary = toolResult.summary || {};
+  const itemCount = summary.totalItems || cart.length;
+  const total = summary.totalAmount || 0;
+
+  if (itemCount === 1) {
+    const item = cart[0];
+    return `You have ${item.name} (×${item.quantity}) in your cart for ₹${total}. Ready to checkout or want to keep shopping?`;
+  }
+
+  const itemNames = cart.slice(0, 3).map(i => i.name).join(', ');
+  const moreItems = cart.length > 3 ? ` and ${cart.length - 3} more` : '';
+  
+  return `You have ${itemCount} items in your cart: ${itemNames}${moreItems}. Total: ₹${total}. Ready to checkout?`;
+}
+
+/**
+ * Generate checkout confirmation message
+ */
+function generateCheckoutConfirmation(toolResult) {
+  if (!toolResult.success) {
+    return `I couldn't complete the checkout. ${toolResult.message || 'Please try again or contact support.'}`;
+  }
+
+  const order = toolResult.order || {};
+  const orderId = order.orderId || 'N/A';
+  const total = order.totalAmount || toolResult.summary?.totalAmount || 0;
+
+  return `🎉 Order confirmed! Your order #${orderId} for ₹${total} has been placed successfully. Thank you for shopping with us!`;
 }
 
 /**
@@ -360,18 +410,51 @@ function generateFallbackExplanation(action, toolResult) {
 // ============================================================================
 
 /**
- * Build system prompt with tenant customization
+ * Build system prompt with tenant persona customization
  */
 function buildSystemPrompt(tenantConfig) {
-  const brandName = tenantConfig?.settings?.brandName || 'our store';
-  const brandVoice = tenantConfig?.settings?.brandVoice || 'friendly and helpful';
-  
-  let prompt = TOOL_DECISION_PROMPT;
-  
-  // Add tenant customization
-  prompt += `\n\nYou are assisting customers of ${brandName}. Your tone should be ${brandVoice}.`;
-  
-  return prompt;
+  // Extract persona from tenant config
+  const persona = tenantConfig?.persona || {};
+  const brandVoice = persona.brandVoice || {};
+  const toneRules = Array.isArray(brandVoice.rules) ? brandVoice.rules.join(' ') : '';
+  const personaName = persona.name || 'SAAI';
+  const personaRole = persona.role || 'AI sales assistant';
+
+  // Build dynamic system content
+  const systemContent = [
+    `You are ${personaName}, ${personaRole} for a fashion and lifestyle ecommerce app.`,
+    'Your job is to help the user find and buy clothes, shoes, and related products.',
+    '',
+    TOOL_INSTRUCTIONS,
+    '',
+    'Prioritize:',
+    '- Understanding the occasion (eid, wedding, office, casual, travel).',
+    '- Suggesting complete outfits when possible (top, bottom, shoes, optionally accessories).',
+    '- Explaining briefly why the outfit fits the user\'s request (color, style, vibe).',
+    '- Being concise and friendly.',
+    brandVoice.tone ? `\nTone: ${brandVoice.tone}.` : '',
+    toneRules ? `\n${toneRules}` : ''
+  ].filter(Boolean).join('\n');
+
+  return systemContent;
+}
+
+/**
+ * Build grounded system prompt with persona
+ */
+function buildGroundedSystemPrompt(tenantConfig, baseRules) {
+  const persona = tenantConfig?.persona || {};
+  const brandVoice = persona.brandVoice || {};
+  const personaName = persona.name || 'SAAI';
+
+  const systemContent = [
+    `You are ${personaName}, a shopping assistant. You MUST ONLY talk about the exact products I give you.`,
+    brandVoice.tone ? `Your tone should be: ${brandVoice.tone}.` : '',
+    '',
+    baseRules
+  ].filter(Boolean).join('\n');
+
+  return systemContent;
 }
 
 /**
@@ -410,6 +493,7 @@ module.exports = {
   runLLMOrchestrator,
   runGroundedExplanation,
   buildSystemPrompt,
+  buildGroundedSystemPrompt,
   getProviderStatus,
   healthCheck
 };
