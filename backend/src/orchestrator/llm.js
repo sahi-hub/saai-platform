@@ -79,9 +79,10 @@ CRITICAL RULES:
  * @param {Object} options.actionRegistry - Available actions
  * @param {string} options.userMessage - User's message
  * @param {Array} [options.conversationHistory] - Previous messages
+ * @param {string} [options.sessionId] - Session ID for cart isolation
  * @returns {Promise<Object>} Orchestration result
  */
-async function runLLMOrchestrator({ tenantConfig, actionRegistry, userMessage, conversationHistory = [] }) {
+async function runLLMOrchestrator({ tenantConfig, actionRegistry, userMessage, conversationHistory = [], sessionId = null }) {
   console.log('[Orchestrator] Starting two-stage LLM pipeline');
   console.log(`[Orchestrator] User message: "${userMessage}"`);
 
@@ -125,8 +126,16 @@ async function runLLMOrchestrator({ tenantConfig, actionRegistry, userMessage, c
   const actionName = tool.name;
   const params = tool.arguments || {};
 
+  // Inject sessionId into params for cart-related tools
+  if (sessionId) {
+    params.sessionId = sessionId;
+  }
+
   console.log(`[Orchestrator] Executing tool: ${actionName}`);
   console.log(`[Orchestrator] Tool params:`, params);
+  if (sessionId) {
+    console.log(`[Orchestrator] Session ID: ${sessionId}`);
+  }
 
   let toolResult;
   try {

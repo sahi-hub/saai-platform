@@ -30,10 +30,25 @@ export default function Home() {
   const [tenantId, setTenantId] = useState<string>('');
   const [theme, setTheme] = useState<Theme>(DEFAULT_THEME);
   const [isLoadingTheme, setIsLoadingTheme] = useState(true);
+  const [sessionId, setSessionId] = useState<string>('');
   const messagesEndRef = useRef<HTMLDivElement>(null);
+
+  // Generate or retrieve sessionId from localStorage
+  useEffect(() => {
+    const STORAGE_KEY = 'saai_session_id';
+    let existing = localStorage.getItem(STORAGE_KEY);
+    if (!existing) {
+      existing = `sess_${Date.now()}_${Math.random().toString(36).substring(2, 11)}`;
+      localStorage.setItem(STORAGE_KEY, existing);
+    }
+    setSessionId(existing);
+  }, []);
 
   // Detect tenant and load theme on mount
   useEffect(() => {
+    // Wait for sessionId to be set before initializing
+    if (!sessionId) return;
+    
     const initializeTenant = async () => {
       try {
         // Detect tenant from hostname
@@ -48,7 +63,9 @@ export default function Home() {
         try {
           const greetingResponse = await sendChatMessage(
             'Greet the user warmly. Introduce yourself briefly and mention 1-2 things you can help with.',
-            detectedTenant
+            detectedTenant,
+            undefined,
+            sessionId
           );
           
           const greetingText = greetingResponse.llm?.text || 
@@ -91,7 +108,7 @@ export default function Home() {
     };
 
     initializeTenant();
-  }, []);
+  }, [sessionId]);
 
   // Auto-scroll to bottom when new messages are added
   useEffect(() => {
@@ -207,8 +224,8 @@ export default function Home() {
       // Build conversation history for LLM context (exclude the message we just added)
       const history = buildHistoryForLLM(messages.filter(m => m.id !== userMessage.id));
       
-      // Call backend API with detected tenant and history
-      const response = await sendChatMessage(text, tenantId, history);
+      // Call backend API with detected tenant, history, and sessionId
+      const response = await sendChatMessage(text, tenantId, history, sessionId);
 
       // Remove loading indicator
       setMessages((prev) => prev.filter(msg => msg.id !== loadingId));

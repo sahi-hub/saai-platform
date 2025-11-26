@@ -25,12 +25,14 @@ export interface HistoryMessage {
  * @param message - User's message text
  * @param tenant - Tenant identifier (optional, uses DEFAULT_TENANT)
  * @param history - Optional conversation history for context
+ * @param sessionId - Optional session ID for cart isolation
  * @returns Promise with backend response
  */
 export async function sendChatMessage(
   message: string,
   tenant: string = DEFAULT_TENANT,
-  history?: HistoryMessage[]
+  history?: HistoryMessage[],
+  sessionId?: string
 ) {
   const response = await fetch(`${API_URL}/chat`, {
     method: 'POST',
@@ -41,6 +43,7 @@ export async function sendChatMessage(
       tenant,
       message,
       ...(history && history.length > 0 && { history }),
+      ...(sessionId && { sessionId }),
     }),
   });
 

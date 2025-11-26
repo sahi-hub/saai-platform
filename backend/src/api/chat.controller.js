@@ -20,13 +20,14 @@ const { loadActionRegistry } = require('../utils/registryLoader');
  * @param {Object} req.body - Request body
  * @param {string} req.body.message - User message (required)
  * @param {string} req.body.tenant - Tenant identifier (required)
+ * @param {string} [req.body.sessionId] - Optional session ID for cart isolation
  * @param {Array} [req.body.history] - Optional conversation history (preferred)
  * @param {Array} [req.body.conversationHistory] - Optional conversation history (legacy alias)
  * @param {Object} res - Express response object
  */
 async function handleChat(req, res) {
   try {
-    const { tenant, message, conversationHistory = [], history = [] } = req.body;
+    const { tenant, message, conversationHistory = [], history = [], sessionId } = req.body;
 
     // Support both 'history' and 'conversationHistory' field names
     const chatHistory = history.length > 0 ? history : conversationHistory;
@@ -55,6 +56,9 @@ async function handleChat(req, res) {
     if (chatHistory.length > 0) {
       console.log(`[Chat] History: ${chatHistory.length} messages`);
     }
+    if (sessionId) {
+      console.log(`[Chat] Session ID: ${sessionId}`);
+    }
     // Load tenant configuration with fallback
     const tenantConfig = await getEffectiveTenant(tenant);
 
@@ -72,7 +76,8 @@ async function handleChat(req, res) {
       tenantConfig,
       actionRegistry,
       userMessage: message,
-      conversationHistory: chatHistory
+      conversationHistory: chatHistory,
+      sessionId: sessionId || null
     });
 
     console.log(`[Chat] Result type: ${result.type}`);
