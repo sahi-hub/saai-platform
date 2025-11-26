@@ -60,7 +60,7 @@ const toolDefinitions = [
   },
   {
     name: "add_to_cart",
-    description: "Add a specific product (by ID) to the user's shopping cart. Use this when the user explicitly wants to add an item to their cart.",
+    description: "Add a SINGLE specific product to cart by its ID. Only use this for ONE item at a time. Do NOT use this for outfits - use add_outfit_to_cart instead.",
     parameters: {
       type: "object",
       properties: {
@@ -75,6 +75,28 @@ const toolDefinitions = [
         }
       },
       required: ["productId"]
+    }
+  },
+  {
+    name: "add_outfit_to_cart",
+    description: "Add a complete outfit to cart. Use this when: (1) user says 'add this outfit', 'add these items', 'add the outfit', 'buy this look', or (2) you previously recommended an outfit and user wants to add it. Extract shirt, pant, and shoe IDs from the conversation history.",
+    parameters: {
+      type: "object",
+      properties: {
+        shirtId: {
+          type: "string",
+          description: "The shirt/top product ID from the outfit (e.g. 'p109')."
+        },
+        pantId: {
+          type: "string",
+          description: "The pant/bottom product ID from the outfit (e.g. 'p110')."
+        },
+        shoeId: {
+          type: "string",
+          description: "The shoe product ID from the outfit (e.g. 'p111')."
+        }
+      },
+      required: ["shirtId", "pantId", "shoeId"]
     }
   },
   {

@@ -8,8 +8,13 @@
     },
     "add_to_cart": {
       "enabled": true,
-      "description": "Add a product to cart",
+      "description": "Add a single product to cart",
       "handler": "commerce.addToCart"
+    },
+    "add_outfit_to_cart": {
+      "enabled": true,
+      "description": "Add a complete outfit (shirt + pant + shoes) to cart",
+      "handler": "commerce.addOutfitToCart"
     },
     "checkout": {
       "enabled": true,

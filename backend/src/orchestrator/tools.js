@@ -19,7 +19,7 @@ const fs = require('fs').promises;
 const { logToolExecution } = require('../utils/logger');
 const { recommendProducts } = require('../recommender/recommender');
 const { recommendOutfit } = require('../recommender/outfitRecommender');
-const { addToCart, viewCart, checkoutCart } = require('../commerce/cartService');
+const { addToCart, addOutfitToCart, viewCart, checkoutCart } = require('../commerce/cartService');
 
 /**
  * Custom error for action not found in registry
@@ -318,6 +318,14 @@ async function runAction({ tenantConfig, actionRegistry, action, params = {} }) 
           sessionId,
           productId: params?.productId,
           quantity: params?.quantity || 1
+        });
+      } else if (functionName === 'addOutfitToCart') {
+        result = await addOutfitToCart({
+          tenantConfig,
+          sessionId,
+          shirtId: params?.shirtId,
+          pantId: params?.pantId,
+          shoeId: params?.shoeId
         });
       } else if (functionName === 'viewCart') {
         result = await viewCart({

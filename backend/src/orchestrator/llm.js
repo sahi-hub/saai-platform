@@ -29,7 +29,8 @@ const TOOL_INSTRUCTIONS = `You have access to tools to help customers:
 - search_products: Search for products by query
 - recommend_products: Recommend products based on preferences
 - recommend_outfit: Recommend a complete outfit (shirt + pant + shoe)
-- add_to_cart: Add a product to the shopping cart
+- add_to_cart: Add a SINGLE product to cart (one item only)
+- add_outfit_to_cart: Add a COMPLETE outfit to cart (all 3 items at once)
 - view_cart: View current cart contents
 - checkout: Complete purchase and create order
 
@@ -37,9 +38,12 @@ WHEN TO USE TOOLS:
 - Use recommend_outfit when the user asks for: outfit, complete look, what to wear, dress me, style me, full look, occasion outfit
 - Use recommend_products when the user asks for: recommendations, suggestions, "show me", "find me", looking for something
 - Use search_products when the user wants to: search, browse, find specific items
-- Use add_to_cart when the user wants to: add to cart, buy this, get this
+- Use add_to_cart when the user wants to add ONE SPECIFIC item: "add the shirt", "add p109"
+- Use add_outfit_to_cart when the user wants to add an OUTFIT: "add this outfit", "add the outfit", "add these to cart", "buy this look", "get this outfit"
 - Use view_cart when the user asks: what's in my cart, show cart, my cart, cart contents
 - Use checkout when the user wants to: checkout, place order, complete purchase, buy now, proceed to payment
+
+IMPORTANT: When the user says "add this outfit" or "add this to cart" after an outfit recommendation, use add_outfit_to_cart with the product IDs from the conversation.
 
 WHEN NOT TO USE TOOLS:
 - Greetings (hello, hi, hey)
@@ -216,6 +220,9 @@ async function runGroundedExplanation({ tenantConfig, userMessage, action, param
   } else if (action === 'add_to_cart') {
     // For cart actions, generate simple confirmation
     return generateCartConfirmation(params, toolResult);
+  } else if (action === 'add_outfit_to_cart') {
+    // For outfit cart additions, generate outfit confirmation
+    return generateOutfitCartConfirmation(toolResult);
   } else if (action === 'view_cart') {
     // For view cart, generate cart summary
     return generateCartSummary(toolResult);
@@ -340,25 +347,50 @@ function generateCartConfirmation(params, toolResult) {
 }
 
 /**
+ * Generate outfit cart confirmation message
+ */
+function generateOutfitCartConfirmation(toolResult) {
+  if (toolResult.success === false) {
+    return `I couldn't add the outfit to your cart. ${toolResult.message || 'Please try again.'}`;
+  }
+
+  const addedItems = toolResult.addedItems || [];
+  const summary = toolResult.summary || {};
+  
+  if (addedItems.length === 0) {
+    return `I couldn't find those items in our catalog. Please try again.`;
+  }
+
+  const itemNames = addedItems.map(i => i.name).join(', ');
+  const total = summary.totalAmount || 0;
+
+  return `🛒 I've added your complete outfit to the cart: ${itemNames}. Your cart total is now ₹${total}. Ready to checkout?`;
+}
+
+/**
  * Generate cart summary message
  */
 function generateCartSummary(toolResult) {
-  if (!toolResult.success || !toolResult.cart || toolResult.cart.length === 0) {
+  // Handle both cart formats: { cart: { items: [...] } } and { cart: [...] }
+  const cartData = toolResult.cart;
+  const cartItems = Array.isArray(cartData) ? cartData : (cartData?.items || []);
+  
+  if (!toolResult.success || cartItems.length === 0) {
     return `Your cart is currently empty. Would you like me to help you find some products?`;
   }
 
-  const cart = toolResult.cart;
   const summary = toolResult.summary || {};
-  const itemCount = summary.totalItems || cart.length;
+  const itemCount = summary.totalItems || cartItems.length;
   const total = summary.totalAmount || 0;
 
   if (itemCount === 1) {
-    const item = cart[0];
-    return `You have ${item.name} (×${item.quantity}) in your cart for ₹${total}. Ready to checkout or want to keep shopping?`;
+    const item = cartItems[0];
+    const itemName = item.name || item.productSnapshot?.name || 'item';
+    return `You have ${itemName} (×${item.quantity}) in your cart for ₹${total}. Ready to checkout or want to keep shopping?`;
   }
 
-  const itemNames = cart.slice(0, 3).map(i => i.name).join(', ');
-  const moreItems = cart.length > 3 ? ` and ${cart.length - 3} more` : '';
+  const itemNames = cartItems.slice(0, 3).map(i => i.name || i.productSnapshot?.name).join(', ');
+  const moreItems = cartItems.length > 3 ? ` and ${cartItems.length - 3} more` : '';
   
   return `You have ${itemCount} items in your cart: ${itemNames}${moreItems}. Total: ₹${total}. Ready to checkout?`;
 }
@@ -373,9 +405,10 @@ function generateCheckoutConfirmation(toolResult) {
 
   const order = toolResult.order || {};
   const orderId = order.orderId || 'N/A';
-  const total = order.totalAmount || toolResult.summary?.totalAmount || 0;
+  const total = order.summary?.totalAmount || order.totalAmount || toolResult.summary?.totalAmount || 0;
+  const paymentMethod = order.paymentMethod || 'online';
 
-  return `🎉 Order confirmed! Your order #${orderId} for ₹${total} has been placed successfully. Thank you for shopping with us!`;
+  return `🎉 Order confirmed! Your order #${orderId} for ₹${total} (${paymentMethod}) has been placed successfully. Thank you for shopping with us!`;
 }
 
 /**

@@ -2,12 +2,26 @@
 
 import { useState, useEffect, useRef } from 'react';
 import ChatLayout from '@/components/ChatLayout';
+import SaaiLayout from '@/components/SaaiLayout';
 import MessageBubble from '@/components/MessageBubble';
 import ChatInput from '@/components/ChatInput';
 import { sendChatMessage, ChatResponse, HistoryMessage } from '@/config/api';
 import { getCurrentTenant } from '@/utils/tenant';
 import { loadTenantTheme, Theme, DEFAULT_THEME } from '@/config/tenant';
 import { ProductItem } from '@/components/ProductCard';
+
+// Cart summary type for side panel
+interface CartSummary {
+  totalItems: number;
+  totalAmount: number;
+}
+
+// Outfit items type for side panel
+interface OutfitItems {
+  shirt?: ProductItem;
+  pant?: ProductItem;
+  shoe?: ProductItem;
+}
 
 // Support both text messages and recommendation messages
 type MessageContent = 
@@ -31,6 +45,12 @@ export default function Home() {
   const [theme, setTheme] = useState<Theme>(DEFAULT_THEME);
   const [isLoadingTheme, setIsLoadingTheme] = useState(true);
   const [sessionId, setSessionId] = useState<string>('');
+  
+  // Side panel state
+  const [lastRecommendations, setLastRecommendations] = useState<ProductItem[] | null>(null);
+  const [lastOutfit, setLastOutfit] = useState<OutfitItems | null>(null);
+  const [cartSummary, setCartSummary] = useState<CartSummary | null>(null);
+  
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   // Generate or retrieve sessionId from localStorage
@@ -266,6 +286,10 @@ export default function Home() {
         });
 
         setMessages((prev) => [...prev, ...newMessages]);
+        
+        // Update side panel with outfit
+        setLastOutfit(response.actionResult.items as OutfitItems);
+        setLastRecommendations(null); // Clear recommendations when outfit is shown
 
         return;
       }
@@ -305,6 +329,10 @@ export default function Home() {
         });
 
         setMessages((prev) => [...prev, ...newMessages]);
+        
+        // Update side panel with recommendations
+        setLastRecommendations(response.actionResult.items as ProductItem[]);
+        setLastOutfit(null); // Clear outfit when recommendations are shown
 
         return;
       }
@@ -315,9 +343,9 @@ export default function Home() {
         
         // Use the message from actionResult, or build from summary
         let cartText = response.actionResult.message as string;
+        const summary = response.actionResult.summary as { totalItems?: number; totalAmount?: number } | undefined;
         
-        if (!cartText && response.actionResult.summary) {
-          const summary = response.actionResult.summary as { totalItems?: number; totalAmount?: number };
+        if (!cartText && summary) {
           cartText = `Your cart has ${summary.totalItems || 0} item(s), total: ₹${summary.totalAmount || 0}`;
         }
         
@@ -338,6 +366,15 @@ export default function Home() {
         };
 
         setMessages((prev) => [...prev, saaiResponse]);
+        
+        // Update side panel cart summary
+        if (summary) {
+          setCartSummary({
+            totalItems: summary.totalItems || 0,
+            totalAmount: summary.totalAmount || 0
+          });
+        }
+        
         return;
       }
 
@@ -364,6 +401,12 @@ export default function Home() {
         };
 
         setMessages((prev) => [...prev, saaiResponse]);
+        
+        // Clear cart summary after checkout
+        if (response.actionResult.success) {
+          setCartSummary(null);
+        }
+        
         return;
       }
 
@@ -443,6 +486,14 @@ export default function Home() {
     handleSendMessage(`Add all of these products to my cart: ${productIds.join(', ')}`);
   };
 
+  /**
+   * Handle checkout from side panel
+   * Sends a message to trigger checkout via chat
+   */
+  const handleCheckout = () => {
+    handleSendMessage('Checkout my cart');
+  };
+
   // Show loading indicator while theme is loading
   if (isLoadingTheme) {
     return (
@@ -460,26 +511,35 @@ export default function Home() {
   }
 
   return (
-    <ChatLayout 
-      tenantId={tenantId}
+    <SaaiLayout
       theme={theme}
-      inputComponent={<ChatInput onSendMessage={handleSendMessage} disabled={isLoading} />}
+      recommendations={lastRecommendations}
+      outfit={lastOutfit}
+      cartSummary={cartSummary}
+      onCheckout={handleCheckout}
+      onAddToCart={handleAddToCart}
     >
-      {messages.map((msg) => (
-        <MessageBubble
-          key={msg.id}
-          message={msg.content || msg.text || ''}
-          sender={msg.sender}
-          timestamp={msg.timestamp}
-          isLoading={msg.isLoading}
-          theme={theme}
-          onAddToCart={handleAddToCart}
-          onAddMultipleToCart={handleAddMultipleToCart}
-        />
-      ))}
-      {/* Invisible element for auto-scroll */}
-      <div ref={messagesEndRef} />
-    </ChatLayout>
+      <ChatLayout 
+        tenantId={tenantId}
+        theme={theme}
+        inputComponent={<ChatInput onSendMessage={handleSendMessage} disabled={isLoading} />}
+      >
+        {messages.map((msg) => (
+          <MessageBubble
+            key={msg.id}
+            message={msg.content || msg.text || ''}
+            sender={msg.sender}
+            timestamp={msg.timestamp}
+            isLoading={msg.isLoading}
+            theme={theme}
+            onAddToCart={handleAddToCart}
+            onAddMultipleToCart={handleAddMultipleToCart}
+          />
+        ))}
+        {/* Invisible element for auto-scroll */}
+        <div ref={messagesEndRef} />
+      </ChatLayout>
+    </SaaiLayout>
   );
 }
 

@@ -106,6 +106,99 @@ async function addToCart({ tenantConfig, sessionId, productId, quantity = 1 }) {
 }
 
 /**
+ * Add a complete outfit (shirt + pant + shoes) to cart
+ * 
+ * @param {Object} options - Add options
+ * @param {Object} options.tenantConfig - Tenant configuration
+ * @param {string} options.sessionId - Session identifier
+ * @param {string} options.shirtId - Shirt product ID
+ * @param {string} options.pantId - Pant product ID
+ * @param {string} options.shoeId - Shoe product ID
+ * @returns {Promise<Object>} Cart result with all added items
+ */
+async function addOutfitToCart({ tenantConfig, sessionId, shirtId, pantId, shoeId }) {
+  const tenantId = tenantConfig?.tenantId || tenantConfig?.id || 'example';
+  const cart = getCartRecord(tenantId, sessionId);
+
+  console.log(`[cartService] Adding outfit to cart: tenant=${tenantId}, shirt=${shirtId}, pant=${pantId}, shoe=${shoeId}`);
+
+  // Load products
+  const products = await loadProductsForTenant(tenantId);
+  const productMap = new Map(products.map(p => [p.id, p]));
+
+  const itemsToAdd = [
+    { id: shirtId, type: 'shirt' },
+    { id: pantId, type: 'pant' },
+    { id: shoeId, type: 'shoe' }
+  ];
+
+  const addedItems = [];
+  const notFoundItems = [];
+
+  for (const item of itemsToAdd) {
+    const product = productMap.get(item.id);
+    
+    if (!product) {
+      notFoundItems.push(item.id);
+      continue;
+    }
+
+    // Check if already in cart
+    const existing = cart.items.find(i => i.productId === item.id);
+    if (existing) {
+      existing.quantity += 1;
+      console.log(`[cartService] Updated quantity for ${item.id}: ${existing.quantity}`);
+    } else {
+      cart.items.push({
+        productId: item.id,
+        quantity: 1,
+        productSnapshot: {
+          id: product.id,
+          name: product.name,
+          price: product.price,
+          currency: product.currency || 'INR',
+          category: product.category,
+          imageUrl: product.imageUrl || product.image
+        }
+      });
+      console.log(`[cartService] Added ${item.type} ${item.id} to cart`);
+    }
+
+    addedItems.push({
+      id: product.id,
+      name: product.name,
+      price: product.price,
+      type: item.type
+    });
+  }
+
+  saveCartRecord(tenantId, sessionId, cart);
+  const summary = buildCartSummary(cart);
+
+  console.log(`[cartService] Outfit added: ${addedItems.length} items, total: ${summary.totalAmount}`);
+
+  // Build response message
+  let message;
+  if (notFoundItems.length > 0) {
+    message = `Added ${addedItems.length} outfit items to your cart. Could not find: ${notFoundItems.join(', ')}.`;
+  } else {
+    const names = addedItems.map(i => i.name).join(', ');
+    message = `Added your complete outfit to cart: ${names}. Total: ₹${summary.totalAmount}.`;
+  }
+
+  return {
+    type: 'cart',
+    success: addedItems.length > 0,
+    action: 'add_outfit_to_cart',
+    message,
+    cart,
+    summary,
+    addedItems,
+    notFoundItems: notFoundItems.length > 0 ? notFoundItems : undefined
+  };
+}
+
+/**
  * View cart contents
  * 
  * @param {Object} options - View options
@@ -202,6 +295,7 @@ async function checkoutCart({ tenantConfig, sessionId, paymentMethod = 'COD' }) 
 
 module.exports = {
   addToCart,
+  addOutfitToCart,
   viewCart,
   checkoutCart,
   buildCartSummary
