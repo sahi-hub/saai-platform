@@ -12,13 +12,26 @@ export const API_URL = process.env.NEXT_PUBLIC_SAAI_API || 'http://localhost:300
 export const DEFAULT_TENANT = process.env.NEXT_PUBLIC_DEFAULT_TENANT || 'example';
 
 /**
+ * Chat history message format for LLM context
+ */
+export interface HistoryMessage {
+  role: 'user' | 'assistant';
+  content: string;
+}
+
+/**
  * Send a chat message to the SAAI backend
  * 
  * @param message - User's message text
  * @param tenant - Tenant identifier (optional, uses DEFAULT_TENANT)
+ * @param history - Optional conversation history for context
  * @returns Promise with backend response
  */
-export async function sendChatMessage(message: string, tenant: string = DEFAULT_TENANT) {
+export async function sendChatMessage(
+  message: string,
+  tenant: string = DEFAULT_TENANT,
+  history?: HistoryMessage[]
+) {
   const response = await fetch(`${API_URL}/chat`, {
     method: 'POST',
     headers: {
@@ -27,6 +40,7 @@ export async function sendChatMessage(message: string, tenant: string = DEFAULT_
     body: JSON.stringify({
       tenant,
       message,
+      ...(history && history.length > 0 && { history }),
     }),
   });
 

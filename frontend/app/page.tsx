@@ -4,7 +4,7 @@ import { useState, useEffect, useRef } from 'react';
 import ChatLayout from '@/components/ChatLayout';
 import MessageBubble from '@/components/MessageBubble';
 import ChatInput from '@/components/ChatInput';
-import { sendChatMessage, ChatResponse } from '@/config/api';
+import { sendChatMessage, ChatResponse, HistoryMessage } from '@/config/api';
 import { getCurrentTenant } from '@/utils/tenant';
 import { loadTenantTheme, Theme, DEFAULT_THEME } from '@/config/tenant';
 import { ProductItem } from '@/components/ProductCard';
@@ -128,6 +128,29 @@ export default function Home() {
   };
 
   /**
+   * Build conversation history for LLM context
+   * Extracts the last N text-only messages and formats them for the backend
+   */
+  const buildHistoryForLLM = (messages: Message[]): HistoryMessage[] => {
+    const MAX_HISTORY = 6; // Keep last 6 messages for context
+    
+    return messages
+      // Filter to text-only messages (exclude recommendations, outfits, loading states)
+      .filter((msg): msg is Message & { content: string } => 
+        typeof msg.content === 'string' && 
+        !msg.isLoading && 
+        msg.content.length > 0
+      )
+      // Map to LLM format
+      .map((msg): HistoryMessage => ({
+        role: msg.sender === 'saai' ? 'assistant' : 'user',
+        content: msg.content
+      }))
+      // Keep only last N messages
+      .slice(-MAX_HISTORY);
+  };
+
+  /**
    * Send message to backend and handle response
    */
   const handleSendMessage = async (text: string) => {
@@ -157,8 +180,11 @@ export default function Home() {
     setIsLoading(true);
 
     try {
-      // Call backend API with detected tenant
-      const response = await sendChatMessage(text, tenantId);
+      // Build conversation history for LLM context (exclude the message we just added)
+      const history = buildHistoryForLLM(messages.filter(m => m.id !== userMessage.id));
+      
+      // Call backend API with detected tenant and history
+      const response = await sendChatMessage(text, tenantId, history);
 
       // Remove loading indicator
       setMessages((prev) => prev.filter(msg => msg.id !== loadingId));
