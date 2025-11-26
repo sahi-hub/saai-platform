@@ -45,6 +45,8 @@ WHEN TO USE TOOLS:
 
 IMPORTANT: When the user says "add this outfit" or "add this to cart" after an outfit recommendation, use add_outfit_to_cart with the product IDs from the conversation.
 
+STYLE CHANGES: If the user asks to change the style, formality level, or colors (e.g., "more casual", "more formal", "different color", "lighter color", "more street style"), you MUST call recommend_outfit again to generate a NEW outfit that matches their updated preferences. Do NOT just re-describe the previous outfit.
+
 WHEN NOT TO USE TOOLS:
 - Greetings (hello, hi, hey)
 - Thank you messages
@@ -64,6 +66,77 @@ const GROUNDED_PRODUCTS_RULES = `CRITICAL RULES:
 2. ONLY describe products from the list I provide
 3. Use the exact product names provided
 4. Keep your response concise and helpful`;
+
+// ============================================================================
+// STYLE CHANGE DETECTION
+// ============================================================================
+
+/**
+ * Detect if user message is requesting a style change
+ * 
+ * This is used as a fallback to force recommend_outfit when the LLM
+ * incorrectly decides to respond with a message instead of calling the tool.
+ */
+const STYLE_CHANGE_PATTERNS = [
+  /more\s+casual/i,
+  /more\s+formal/i,
+  /more\s+street/i,
+  /more\s+elegant/i,
+  /more\s+sporty/i,
+  /more\s+relaxed/i,
+  /more\s+dressy/i,
+  /more\s+comfortable/i,
+  /less\s+formal/i,
+  /less\s+casual/i,
+  /lighter\s+colou?r/i,
+  /darker\s+colou?r/i,
+  /different\s+colou?r/i,
+  /change\s+(the\s+)?colou?r/i,
+  /brighter/i,
+  /make\s+it\s+more/i,
+  /switch\s+to/i,
+  /can\s+(you\s+)?make\s+it/i,
+  /something\s+more/i,
+  /try\s+something\s+more/i
+];
+
+function isStyleChangeRequest(message) {
+  const normalized = message.toLowerCase().trim();
+  return STYLE_CHANGE_PATTERNS.some(pattern => pattern.test(normalized));
+}
+
+/**
+ * Extract occasion from conversation history
+ * 
+ * Looks back through history to find the original occasion
+ * (e.g., "Eid outfit", "wedding", "office")
+ */
+function extractOccasionFromHistory(history) {
+  const occasionPatterns = [
+    { regex: /\b(eid|eidm|ramadan)\b/i, occasion: 'eid' },
+    { regex: /\b(wedding|shaadi|nikah|baraat)\b/i, occasion: 'wedding' },
+    { regex: /\b(office|work|formal|business|meeting)\b/i, occasion: 'office' },
+    { regex: /\b(casual|everyday|daily)\b/i, occasion: 'casual' },
+    { regex: /\b(party|celebration|club|night out)\b/i, occasion: 'party' },
+    { regex: /\b(travel|vacation|trip)\b/i, occasion: 'travel' },
+    { regex: /\b(date|dinner|romantic)\b/i, occasion: 'date' },
+    { regex: /\b(sport|gym|athletic|workout)\b/i, occasion: 'sports' }
+  ];
+
+  // Search backwards through history (most recent first)
+  for (let i = history.length - 1; i >= 0; i--) {
+    const msg = history[i];
+    const content = typeof msg === 'string' ? msg : (msg.content || '');
+    
+    for (const { regex, occasion } of occasionPatterns) {
+      if (regex.test(content)) {
+        return occasion;
+      }
+    }
+  }
+
+  return 'casual'; // default
+}
 
 // ============================================================================
 // MAIN ORCHESTRATOR FUNCTION
@@ -109,12 +182,29 @@ async function runLLMOrchestrator({ tenantConfig, actionRegistry, userMessage, c
 
   // If LLM decided to just respond (no tool)
   if (llmDecision.decision === 'message') {
-    return {
-      type: 'message',
-      provider: llmDecision.provider,
-      model: llmDecision.model,
-      text: llmDecision.text
-    };
+    // FALLBACK: Check if user is requesting a style change
+    // If so, force a recommend_outfit call instead of returning text
+    if (isStyleChangeRequest(userMessage)) {
+      console.log(`[Orchestrator] Style-change detected but LLM responded with message. Forcing recommend_outfit.`);
+      
+      // Build fallback tool call
+      llmDecision.decision = 'tool';
+      llmDecision.tool = {
+        name: 'recommend_outfit',
+        arguments: {
+          occasion: extractOccasionFromHistory(conversationHistory),
+          preferences: userMessage // pass the style change as preferences
+        }
+      };
+      // Fall through to tool execution below
+    } else {
+      return {
+        type: 'message',
+        provider: llmDecision.provider,
+        model: llmDecision.model,
+        text: llmDecision.text
+      };
+    }
   }
 
   // =========================================================================
@@ -453,9 +543,15 @@ function buildSystemPrompt(tenantConfig) {
   const personaName = persona.name || 'SAAI';
   const personaRole = persona.role || 'AI sales assistant';
 
-  // Build dynamic system content
+  // Build dynamic system content - NO self-introduction to avoid double greeting
   const systemContent = [
-    `You are ${personaName}, ${personaRole} for a fashion and lifestyle ecommerce app.`,
+    `${personaName} is ${personaRole} for a fashion and lifestyle ecommerce app.`,
+    '',
+    'CRITICAL: The user already sees your introduction in the app UI.',
+    'DO NOT introduce yourself again or explain what you can do.',
+    'DO NOT say "How can I help you today?" as your first response.',
+    'Always answer the user\'s latest message directly and concisely.',
+    '',
     'Your job is to help the user find and buy clothes, shoes, and related products.',
     '',
     TOOL_INSTRUCTIONS,
@@ -464,7 +560,7 @@ function buildSystemPrompt(tenantConfig) {
     '- Understanding the occasion (eid, wedding, office, casual, travel).',
     '- Suggesting complete outfits when possible (top, bottom, shoes, optionally accessories).',
     '- Explaining briefly why the outfit fits the user\'s request (color, style, vibe).',
-    '- Being concise and friendly.',
+    '- Being concise, friendly, and sales-focused.',
     brandVoice.tone ? `\nTone: ${brandVoice.tone}.` : '',
     toneRules ? `\n${toneRules}` : ''
   ].filter(Boolean).join('\n');

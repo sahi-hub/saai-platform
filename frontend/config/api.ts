@@ -86,3 +86,72 @@ export interface ChatResponse {
   tenantConfig?: Record<string, unknown>;
   actionRegistry?: Record<string, unknown>;
 }
+
+/**
+ * Add outfit to cart response type
+ */
+export interface AddOutfitResponse {
+  success: boolean;
+  type?: string;
+  action?: string;
+  message?: string;
+  error?: string;
+  cart?: {
+    items: Array<{
+      productId: string;
+      quantity: number;
+      productSnapshot: {
+        id: string;
+        name: string;
+        price: number;
+        currency: string;
+        category: string;
+        imageUrl: string;
+      };
+    }>;
+  };
+  summary?: {
+    totalItems: number;
+    totalAmount: number;
+  };
+  addedItems?: Array<{
+    id: string;
+    name: string;
+    price: number;
+    type: string;
+  }>;
+}
+
+/**
+ * Add outfit to cart (deterministic, no LLM)
+ * 
+ * Calls the backend directly to add multiple products to cart.
+ * This bypasses the LLM for faster, deterministic cart operations.
+ * 
+ * @param tenantId - Tenant identifier
+ * @param sessionId - Session ID for cart isolation
+ * @param productIds - Array of product IDs to add
+ * @returns Promise with cart operation response
+ */
+export async function addOutfitToCart(
+  tenantId: string,
+  sessionId: string,
+  productIds: string[]
+): Promise<AddOutfitResponse> {
+  const response = await fetch(`${API_URL}/cart/${tenantId}/add-outfit`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      sessionId,
+      productIds,
+    }),
+  });
+
+  if (!response.ok) {
+    throw new Error(`API error: ${response.status} ${response.statusText}`);
+  }
+
+  return response.json();
+}

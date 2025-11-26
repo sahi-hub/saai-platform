@@ -15,7 +15,8 @@ const {
 const { 
   getCart, 
   addToCartEndpoint, 
-  checkoutCartEndpoint 
+  checkoutCartEndpoint,
+  addOutfitToCartEndpoint 
 } = require('./cart.controller');
 const { 
   getDebugLogs, 
@@ -80,6 +81,7 @@ router.post('/recommend/:tenantId/personalized', getPersonalizedController);
  * Cart endpoints (debug/prototype)
  * GET /cart/:tenantId - View cart contents
  * POST /cart/:tenantId/add - Add product to cart
+ * POST /cart/:tenantId/add-outfit - Add outfit (multiple products) to cart
  * POST /cart/:tenantId/checkout - Checkout and create order
  * 
  * These are for manual testing via curl.
@@ -93,12 +95,17 @@ router.post('/recommend/:tenantId/personalized', getPersonalizedController);
  * - quantity: Quantity (optional)
  * - sessionId: Session ID (optional)
  * 
+ * Body for POST /add-outfit:
+ * - sessionId: Session ID (required)
+ * - productIds: Array of product IDs to add (required)
+ * 
  * Body for POST /checkout:
  * - sessionId: Session ID (optional)
  * - paymentMethod: Payment method (optional, default COD)
  */
 router.get('/cart/:tenantId', getCart);
 router.post('/cart/:tenantId/add', addToCartEndpoint);
+router.post('/cart/:tenantId/add-outfit', addOutfitToCartEndpoint);
 router.post('/cart/:tenantId/checkout', checkoutCartEndpoint);
 
 /**

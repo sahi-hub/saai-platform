@@ -5,7 +5,7 @@
  * These are for manual testing via curl, not intended for production use.
  */
 
-const { viewCart, checkoutCart, addToCart } = require('../commerce/cartService');
+const { viewCart, checkoutCart, addToCart, addOutfitToCart } = require('../commerce/cartService');
 const { loadTenantConfig } = require('../utils/tenantLoader');
 
 /**
@@ -103,6 +103,63 @@ exports.checkoutCartEndpoint = async (req, res) => {
     res.status(500).json({ 
       success: false, 
       error: 'Failed to checkout',
+      message: err.message 
+    });
+  }
+};
+
+/**
+ * POST /cart/:tenantId/add-outfit
+ * Add a complete outfit (multiple products) to cart in one call
+ * 
+ * Body:
+ * - sessionId: Session ID (required)
+ * - productIds: Array of product IDs to add (required)
+ * 
+ * This deterministic endpoint is for the frontend to call directly
+ * when the user clicks "Add outfit to cart" on the side panel.
+ */
+exports.addOutfitToCartEndpoint = async (req, res) => {
+  try {
+    const tenantId = req.params.tenantId || 'example';
+    const { sessionId, productIds } = req.body;
+
+    console.log(`[cart.controller] POST add-outfit: tenant=${tenantId}, session=${sessionId}, products=${JSON.stringify(productIds)}`);
+
+    if (!sessionId) {
+      return res.status(400).json({
+        success: false,
+        error: 'sessionId is required'
+      });
+    }
+
+    if (!productIds || !Array.isArray(productIds) || productIds.length === 0) {
+      return res.status(400).json({
+        success: false,
+        error: 'productIds array is required and must not be empty'
+      });
+    }
+
+    const tenantConfig = await loadTenantConfig(tenantId);
+    
+    // Map array to outfit structure (assuming order: shirt, pant, shoe)
+    // If there are more or fewer items, we still handle it gracefully
+    const [shirtId, pantId, shoeId] = productIds;
+    
+    const result = await addOutfitToCart({ 
+      tenantConfig, 
+      sessionId, 
+      shirtId: shirtId || null,
+      pantId: pantId || null,
+      shoeId: shoeId || null
+    });
+
+    res.json(result);
+  } catch (err) {
+    console.error('[cart.controller] addOutfitToCart error:', err);
+    res.status(500).json({ 
+      success: false, 
+      error: 'Failed to add outfit to cart',
       message: err.message 
     });
   }

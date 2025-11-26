@@ -5,7 +5,7 @@ import ChatLayout from '@/components/ChatLayout';
 import SaaiLayout from '@/components/SaaiLayout';
 import MessageBubble from '@/components/MessageBubble';
 import ChatInput from '@/components/ChatInput';
-import { sendChatMessage, ChatResponse, HistoryMessage } from '@/config/api';
+import { sendChatMessage, ChatResponse, HistoryMessage, addOutfitToCart, AddOutfitResponse } from '@/config/api';
 import { getCurrentTenant } from '@/utils/tenant';
 import { loadTenantTheme, Theme, DEFAULT_THEME } from '@/config/tenant';
 import { ProductItem } from '@/components/ProductCard';
@@ -26,6 +26,7 @@ interface OutfitItems {
 // Support both text messages and recommendation messages
 type MessageContent = 
   | string 
+  | { type: 'text'; text: string; }
   | { type: 'recommendations'; items: ProductItem[]; }
   | { type: 'outfit'; items: { shirt?: ProductItem; pant?: ProductItem; shoe?: ProductItem; }; };
 
@@ -480,10 +481,53 @@ export default function Home() {
 
   /**
    * Handle Add Multiple to Cart (for outfit "Add Full Outfit" button)
-   * Sends a message to add all products to cart
+   * Calls backend directly (no LLM) for deterministic cart operations
    */
-  const handleAddMultipleToCart = (productIds: string[]) => {
-    handleSendMessage(`Add all of these products to my cart: ${productIds.join(', ')}`);
+  const handleAddMultipleToCart = async (productIds: string[]) => {
+    if (!sessionId || !tenantId || productIds.length === 0) {
+      console.error('[UI] Missing sessionId, tenantId, or productIds');
+      return;
+    }
+
+    try {
+      // Call backend directly (bypasses LLM)
+      const response: AddOutfitResponse = await addOutfitToCart(tenantId, sessionId, productIds);
+
+      if (!response.success) {
+        // Show error message in chat
+        const errorMessage: Message = {
+          id: Date.now().toString(),
+          content: { type: 'text', text: response.error || "I couldn't add that outfit to your cart. Please try again." },
+          sender: 'saai',
+          timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        };
+        setMessages(prev => [...prev, errorMessage]);
+        return;
+      }
+
+      // Show confirmation in chat
+      const confirmMessage: Message = {
+        id: Date.now().toString(),
+        content: { type: 'text', text: response.message || "I've added that outfit to your cart." },
+        sender: 'saai',
+        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+      };
+      setMessages(prev => [...prev, confirmMessage]);
+
+      // Update side panel cart summary
+      if (response.summary) {
+        setCartSummary(response.summary);
+      }
+    } catch (err) {
+      console.error('[UI] add full outfit error:', err);
+      const errorMessage: Message = {
+        id: Date.now().toString(),
+        content: { type: 'text', text: 'Something went wrong while adding the outfit to your cart.' },
+        sender: 'saai',
+        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+      };
+      setMessages(prev => [...prev, errorMessage]);
+    }
   };
 
   /**
