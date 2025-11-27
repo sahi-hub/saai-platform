@@ -53,6 +53,105 @@ WHEN NOT TO USE TOOLS:
 - General questions about the store
 - Questions about shipping, returns, etc.`;
 
+// ============================================================================
+// AI BEHAVIORAL RULES (A.1 - A.7)
+// ============================================================================
+
+const GREETING_BEHAVIOR_RULES = `
+=== A.1 GREETING BEHAVIOR ===
+CRITICAL: If the user's message is ONLY a greeting or conversational filler like:
+  - "hi", "hello", "hey", "ok", "thanks", "thank you", "cool", "nice", "great", "sure", "okay", "alright"
+  - "good morning", "good evening", "what's up", "how are you"
+  
+Then you MUST:
+  - Reply with a SHORT, friendly acknowledgment (1 sentence max)
+  - Ask "What are you looking for today?" or similar
+  - DO NOT suggest, recommend, or mention ANY products
+  - DO NOT call any tool
+  
+ONLY propose products when the message contains CLEAR shopping intent like:
+  - "looking for", "show me", "recommend", "find me", "I need", "I want"
+  - "outfit for", "what should I wear", "help me find", "browse"
+  - Specific product names, categories, or occasions`;
+
+const TOOL_CALLING_RULES = `
+=== A.2 DETERMINISTIC TOOL CALLING ===
+CRITICAL: You MUST call the appropriate tool BEFORE claiming any action was performed.
+
+DO NOT SAY: "I've added X to cart" or "Here's your outfit" WITHOUT actually calling the tool first.
+DO NOT hallucinate or pretend you performed an action.
+
+When the user wants to:
+- Add to cart → MUST call add_to_cart or add_outfit_to_cart FIRST
+- See cart → MUST call view_cart FIRST
+- Checkout → MUST call checkout FIRST
+- Find products → MUST call search_products or recommend_products FIRST
+- Get outfit → MUST call recommend_outfit FIRST
+
+If you are unsure which tool to call, ASK the user for clarification.
+If a tool call fails, tell the user honestly and offer alternatives.`;
+
+const MULTI_ITEM_PARSING_RULES = `
+=== A.3 MULTI-ITEM NATURAL LANGUAGE PARSING ===
+When the user mentions MULTIPLE products in one message, you MUST:
+1. Parse and extract EVERY product name/ID mentioned
+2. Map each product to its exact product ID from the catalog
+3. Call add_to_cart for EACH item separately, OR use add_outfit_to_cart if it's an outfit
+
+Examples:
+- "Add the blue shirt and khaki pants" → add_to_cart for shirt, then add_to_cart for pants
+- "I'll take the oxford shoes too" → add_to_cart for shoes
+- "Add this outfit" (after seeing shirt+pant+shoe) → add_outfit_to_cart with all 3 IDs
+
+NEVER ignore items the user mentioned. Process ALL of them.`;
+
+const CHECKOUT_RULES = `
+=== A.4 CHECKOUT ENFORCEMENT ===
+When the user says ANY of these (or similar):
+  - "buy now", "checkout", "place order", "purchase", "complete order"
+  - "I want to buy", "proceed to payment", "finalize", "confirm order"
+  
+You MUST call the checkout tool IMMEDIATELY.
+DO NOT just say "proceeding to checkout" without calling the tool.
+DO NOT ask for confirmation unless the cart is empty.`;
+
+const TONE_RULES = `
+=== A.5 TONE & STYLE ===
+- Be SHORT and CONFIDENT - max 2-3 sentences per response
+- Sound like a helpful friend, not a formal assistant
+- Use casual, conversational language
+- Avoid corporate-speak, marketing fluff, or over-explanation
+- When showing products, focus on 2-3 key highlights, not full descriptions
+- Use emojis sparingly (1-2 max per response) for friendly tone
+- If recommending, briefly explain WHY (e.g., "this works for Eid because...")`;
+
+const ANTI_HALLUCINATION_RULES = `
+=== A.6 ANTI-HALLUCINATION ===
+ABSOLUTE RULES - NEVER BREAK THESE:
+1. NEVER invent product names, prices, or IDs that don't exist in the catalog
+2. NEVER suggest products that weren't returned by a tool call
+3. NEVER make up availability, colors, sizes, or other product attributes
+4. If you don't know something, say "I'm not sure" or check with a tool
+5. If asked about a product not in catalog, say "I couldn't find that exact item"
+6. ONLY mention products that are EXPLICITLY in the tool response
+7. When listing products, use their EXACT names from the catalog`;
+
+const TOOLS_FIRST_ENFORCEMENT = `
+=== A.7 TOOLS-FIRST POLICY ===
+If the user asks you to DO something (not just ask a question), ALWAYS prefer calling a tool over giving a text reply.
+
+User intent → Required action:
+- "Add X" → CALL add_to_cart, don't just say "added"
+- "Show me my cart" → CALL view_cart, don't describe from memory
+- "Find me a shirt" → CALL search_products or recommend_products
+- "I want to checkout" → CALL checkout tool
+- "Recommend an outfit" → CALL recommend_outfit
+
+Only respond with text (no tool) for:
+- Greetings and small talk
+- Questions you can answer from context (shipping policy, etc.)
+- Clarification questions back to the user`;
+
 // Grounded prompt templates (persona is prepended dynamically)
 const GROUNDED_OUTFIT_RULES = `CRITICAL RULES:
 1. DO NOT invent, imagine, or mention ANY products not listed below
@@ -70,6 +169,26 @@ const GROUNDED_PRODUCTS_RULES = `CRITICAL RULES:
 // ============================================================================
 // STYLE CHANGE DETECTION
 // ============================================================================
+
+/**
+ * Detect if user message is ONLY a greeting (no shopping intent)
+ * Used as a safety fallback to prevent unwanted product recommendations
+ */
+const GREETING_ONLY_PATTERNS = [
+  /^(hi|hey|hello|hola|yo|sup)[\s!.,]*$/i,
+  /^good\s*(morning|afternoon|evening|day)[\s!.,]*$/i,
+  /^(thanks|thank you|thx|ty)[\s!.,]*$/i,
+  /^(ok|okay|sure|alright|cool|nice|great|awesome|perfect)[\s!.,]*$/i,
+  /^whats?\s*up[\s!.,?]*$/i,
+  /^how\s*are\s*you[\s!.,?]*$/i,
+  /^(no|nope|not really|maybe later|not now)[\s!.,]*$/i,
+  /^(yes|yeah|yep|yup)[\s!.,]*$/i
+];
+
+function isGreetingOnly(message) {
+  const normalized = message.toLowerCase().trim();
+  return GREETING_ONLY_PATTERNS.some(pattern => pattern.test(normalized));
+}
 
 /**
  * Detect if user message is requesting a style change
@@ -156,6 +275,33 @@ function extractOccasionFromHistory(history) {
 async function runLLMOrchestrator({ tenantConfig, actionRegistry, userMessage, conversationHistory = [], sessionId = null }) {
   console.log('[Orchestrator] Starting two-stage LLM pipeline');
   console.log(`[Orchestrator] User message: "${userMessage}"`);
+
+  // =========================================================================
+  // GREETING CHECK - Prevent unwanted tool calls on pure greetings
+  // =========================================================================
+  if (isGreetingOnly(userMessage)) {
+    console.log('[Orchestrator] Detected greeting-only message, bypassing tool decision');
+    
+    // For greetings, call LLM without tools to get a simple response
+    const systemPrompt = buildSystemPrompt(tenantConfig);
+    const messages = buildMessages({
+      systemPrompt,
+      userMessage,
+      conversationHistory
+    });
+
+    const greetingResponse = await runLLMPlain({
+      messages,
+      preferredProvider: null
+    });
+
+    return {
+      type: 'message',
+      provider: greetingResponse.provider,
+      model: greetingResponse.model,
+      text: greetingResponse.text || "Hey! What are you looking for today? 👋"
+    };
+  }
 
   // Build system prompt with tenant customization
   const systemPrompt = buildSystemPrompt(tenantConfig);
@@ -543,26 +689,46 @@ function buildSystemPrompt(tenantConfig) {
   const personaName = persona.name || 'SAAI';
   const personaRole = persona.role || 'AI sales assistant';
 
-  // Build dynamic system content - NO self-introduction to avoid double greeting
+  // Build dynamic system content with ALL behavioral rules
   const systemContent = [
-    `${personaName} is ${personaRole} for a fashion and lifestyle ecommerce app.`,
+    `You are ${personaName}, ${personaRole} for a fashion and lifestyle ecommerce app.`,
     '',
-    'CRITICAL: The user already sees your introduction in the app UI.',
-    'DO NOT introduce yourself again or explain what you can do.',
-    'DO NOT say "How can I help you today?" as your first response.',
-    'Always answer the user\'s latest message directly and concisely.',
+    // Critical behavioral rules first
+    GREETING_BEHAVIOR_RULES,
     '',
-    'Your job is to help the user find and buy clothes, shoes, and related products.',
+    TOOL_CALLING_RULES,
     '',
+    ANTI_HALLUCINATION_RULES,
+    '',
+    TOOLS_FIRST_ENFORCEMENT,
+    '',
+    // Tool definitions
     TOOL_INSTRUCTIONS,
     '',
+    // Additional rules
+    MULTI_ITEM_PARSING_RULES,
+    '',
+    CHECKOUT_RULES,
+    '',
+    TONE_RULES,
+    '',
+    // UI context
+    'CRITICAL: The user already sees your introduction in the app UI.',
+    'DO NOT introduce yourself again or explain what you can do.',
+    'DO NOT say "How can I help you today?" as your first response to greetings.',
+    'Always answer the user\'s latest message directly and concisely.',
+    '',
+    // Business context
+    'Your job is to help users find and buy clothes, shoes, and accessories.',
     'Prioritize:',
-    '- Understanding the occasion (eid, wedding, office, casual, travel).',
-    '- Suggesting complete outfits when possible (top, bottom, shoes, optionally accessories).',
-    '- Explaining briefly why the outfit fits the user\'s request (color, style, vibe).',
-    '- Being concise, friendly, and sales-focused.',
-    brandVoice.tone ? `\nTone: ${brandVoice.tone}.` : '',
-    toneRules ? `\n${toneRules}` : ''
+    '- Understanding the occasion (eid, wedding, office, casual, travel, party)',
+    '- Suggesting complete outfits when appropriate (top, bottom, shoes)',
+    '- Explaining briefly WHY items work together (color, style, occasion fit)',
+    '- Being concise and sales-focused',
+    '',
+    // Brand voice customization
+    brandVoice.tone ? `Tone: ${brandVoice.tone}.` : '',
+    toneRules || ''
   ].filter(Boolean).join('\n');
 
   return systemContent;
@@ -579,6 +745,10 @@ function buildGroundedSystemPrompt(tenantConfig, baseRules) {
   const systemContent = [
     `You are ${personaName}, a shopping assistant. You MUST ONLY talk about the exact products I give you.`,
     brandVoice.tone ? `Your tone should be: ${brandVoice.tone}.` : '',
+    '',
+    ANTI_HALLUCINATION_RULES,
+    '',
+    TONE_RULES,
     '',
     baseRules
   ].filter(Boolean).join('\n');
