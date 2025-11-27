@@ -31,6 +31,8 @@ const { canProceed, getStats } = require('../utils/rateLimiter');
 const { addLog } = require('../debug/logger');
 const { getOrCreateProfile } = require('../personalization/profileStore');
 const { updateProfileFromProducts, buildProfileSummary } = require('../personalization/profileUpdater');
+const { getSessionContext, saveSessionContext } = require('../personalization/sessionContextStore');
+const { buildRecentProductsContext } = require('../personalization/recentProductsFormatter');
 
 // Use same model constant as geminiVisionClient
 const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-2.0-flash';
@@ -83,6 +85,69 @@ function parseAndValidateLLMResult(llmResult, products) {
   }
 
   return { reply, matchedProductIds };
+}
+
+/**
+ * Build prompt based on query type (text, image, or combined)
+ * 
+ * @param {string|null} message - User text message
+ * @param {string|null} imageBase64 - Base64-encoded image
+ * @returns {string} - Prompt for LLM
+ */
+function buildPrompt(message, imageBase64) {
+  if (imageBase64 && message) {
+    return `The user has provided an image and a message: "${message}". 
+Analyze the image and the message together. If the image shows clothing or fashion items, 
+find similar or matching products from the catalog. Consider the user's message for additional context.`;
+  }
+  
+  if (imageBase64) {
+    return `The user has provided an image. Analyze this image and if it shows clothing, 
+fashion items, or style elements, find similar or matching products from the catalog. 
+Describe what you see and suggest relevant items.`;
+  }
+  
+  return message;
+}
+
+/**
+ * Load recent products context from previous session for reference resolution
+ * 
+ * @param {string} tenantId - Tenant ID
+ * @param {string|null} sessionId - Session ID
+ * @returns {{ previousContext: Object|null, recentProductsContext: string|null }}
+ */
+function loadRecentProductsContext(tenantId, sessionId) {
+  const previousContext = getSessionContext(tenantId, sessionId);
+  let recentProductsContext = null;
+  
+  if (previousContext?.lastProducts?.length > 0) {
+    recentProductsContext = buildRecentProductsContext(
+      previousContext.lastProducts,
+      previousContext.lastMatchedProductIds || []
+    );
+    console.log(`[Assistant] Loaded ${previousContext.lastProducts.length} recent products for reference resolution`);
+  }
+  
+  return { previousContext, recentProductsContext };
+}
+
+/**
+ * Save session context after processing query
+ * Persists product context for next turn's reference resolution
+ * 
+ * @param {Object} params - Save parameters
+ */
+function saveSessionAfterQuery({ tenantId, sessionId, products, matchedProductIds, previousContext, message }) {
+  const matchedProducts = products.filter((p) => matchedProductIds.includes(p.id));
+  
+  saveSessionContext({
+    tenantId,
+    sessionId: sessionId || null,
+    lastProducts: matchedProducts.length > 0 ? matchedProducts : (previousContext?.lastProducts || []),
+    lastMatchedProductIds: matchedProducts.length > 0 ? matchedProductIds : (previousContext?.lastMatchedProductIds || []),
+    lastUserMessage: message || '[image query]'
+  });
 }
 
 /**
@@ -168,25 +233,14 @@ async function handleAssistantQuery(req, res) {
       console.log(`[Assistant] Profile loaded: ${profile.interactionCount} interactions`);
     }
 
+    // Load previous session context for conversational commerce
+    const { previousContext, recentProductsContext } = loadRecentProductsContext(tenantId, sessionId || null);
+
     // Build compact product context for LLM
     const productContext = buildProductContext(products);
 
     // Build prompt based on query type
-    let prompt;
-    if (imageBase64 && message) {
-      // Combined image + text query
-      prompt = `The user has provided an image and a message: "${message}". 
-Analyze the image and the message together. If the image shows clothing or fashion items, 
-find similar or matching products from the catalog. Consider the user's message for additional context.`;
-    } else if (imageBase64) {
-      // Image-only query
-      prompt = `The user has provided an image. Analyze this image and if it shows clothing, 
-fashion items, or style elements, find similar or matching products from the catalog. 
-Describe what you see and suggest relevant items.`;
-    } else {
-      // Text-only query
-      prompt = message;
-    }
+    const prompt = buildPrompt(message, imageBase64);
 
     // Call Gemini Flash Vision
     const llmResult = await callGeminiFlashVision({
@@ -194,6 +248,7 @@ Describe what you see and suggest relevant items.`;
       imageBase64: imageBase64 || null,
       productContext,
       profileContext: profileSummary,
+      recentProductsContext,
       history: Array.isArray(history) ? history : []
     });
 
@@ -209,6 +264,15 @@ Describe what you see and suggest relevant items.`;
         matchedProductIds
       });
     }
+
+    // Save session context for conversational commerce (reference resolution)
+    // Store full product objects for matched products so we can build indexed context next turn
+    const matchedProducts = products.filter((p) => matchedProductIds.includes(p.id));
+    saveSessionContext(tenantId, sessionId || null, {
+      lastProducts: matchedProducts.length > 0 ? matchedProducts : (previousContext?.lastProducts || []),
+      lastMatchedProductIds: matchedProductIds.length > 0 ? matchedProductIds : (previousContext?.lastMatchedProductIds || []),
+      lastUserMessage: message || '[image query]'
+    });
 
     const duration = Date.now() - startTime;
     console.log(`[Assistant] Query completed in ${duration}ms`);
