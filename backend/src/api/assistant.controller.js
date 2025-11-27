@@ -29,6 +29,8 @@ const { loadProductsForTenant } = require('../utils/productLoader');
 const { callGeminiFlashVision } = require('../llm/geminiVisionClient');
 const { canProceed, getStats } = require('../utils/rateLimiter');
 const { addLog } = require('../debug/logger');
+const { getOrCreateProfile } = require('../personalization/profileStore');
+const { updateProfileFromProducts, buildProfileSummary } = require('../personalization/profileUpdater');
 
 // Use same model constant as geminiVisionClient
 const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-2.0-flash';
@@ -158,6 +160,14 @@ async function handleAssistantQuery(req, res) {
 
     console.log(`[Assistant] Loaded ${products.length} products for context`);
 
+    // Load or create user preference profile
+    const profile = getOrCreateProfile(tenantId, sessionId || null);
+    const profileSummary = buildProfileSummary(profile);
+    
+    if (profileSummary) {
+      console.log(`[Assistant] Profile loaded: ${profile.interactionCount} interactions`);
+    }
+
     // Build compact product context for LLM
     const productContext = buildProductContext(products);
 
@@ -183,11 +193,22 @@ Describe what you see and suggest relevant items.`;
       prompt,
       imageBase64: imageBase64 || null,
       productContext,
+      profileContext: profileSummary,
       history: Array.isArray(history) ? history : []
     });
 
     // Parse and validate result
     const { reply, matchedProductIds } = parseAndValidateLLMResult(llmResult, products);
+
+    // Update user profile based on matched products (learn preferences)
+    if (matchedProductIds.length > 0) {
+      updateProfileFromProducts({
+        tenantId,
+        sessionId: sessionId || null,
+        products,
+        matchedProductIds
+      });
+    }
 
     const duration = Date.now() - startTime;
     console.log(`[Assistant] Query completed in ${duration}ms`);

@@ -46,31 +46,53 @@ function detectMimeType(prefix) {
  * @param {string} options.prompt - User's text query
  * @param {string|null} options.imageBase64 - Optional base64 image (data URI or raw)
  * @param {string} options.productContext - JSON string of product catalog
+ * @param {string} options.profileContext - JSON string of user preference profile (optional)
  * @param {Array} options.history - Conversation history [{role: 'user'|'assistant', content: string}]
  * @returns {Promise<string>} Raw JSON-like text response from Gemini
  */
-async function callGeminiFlashVision({ prompt, imageBase64, productContext, history = [] }) {
+async function callGeminiFlashVision({ prompt, imageBase64, productContext, profileContext = '', history = [] }) {
   const client = getGeminiClient();
   const model = client.getGenerativeModel({ model: MODEL });
 
   const parts = [];
 
-  // System + product context first
-  const systemText = [
+  // Build system instructions
+  const systemLines = [
     'You are SAAI, an AI shopping assistant.',
     'You MUST ONLY recommend products that exist in the provided catalog.',
     'You are given a list of products with id, name, description, category, price, and tags.',
+    '',
     'When you answer:',
     '- Mention products by name and optionally ID.',
     '- Suggest the best matches for the user\'s request or image.',
     '- Do NOT invent products that are not in the catalog.',
     '- Be helpful, friendly, and concise.',
-    '- IMPORTANT: Remember the conversation context and refer back to previous messages when relevant.',
+    '- IMPORTANT: Remember the conversation context and refer back to previous messages when relevant.'
+  ];
+
+  // Include user preference profile if available
+  if (profileContext && profileContext.length > 0) {
+    systemLines.push(
+      '',
+      '=== USER PREFERENCE PROFILE ===',
+      'The user has shown preferences for certain styles, colors, and categories.',
+      'When making recommendations, PREFER products that match these preferences when reasonable.',
+      'You may acknowledge their preferences naturally (e.g., "Since you seem to like white and navy...").',
+      '',
+      'User preference profile (JSON):',
+      profileContext,
+      '=== END PROFILE ==='
+    );
+  }
+
+  // Add product catalog
+  systemLines.push(
     '',
     'Product catalog:',
     productContext
-  ].join('\n');
+  );
 
+  const systemText = systemLines.join('\n');
   parts.push({ text: systemText });
 
   // Include conversation history for context (limit to last 10 exchanges to prevent token overflow)
@@ -137,7 +159,13 @@ async function callGeminiFlashVision({ prompt, imageBase64, productContext, hist
       '  "message": "<friendly natural language reply mentioning product names>",',
       '  "matchedProductIds": ["p101", "p102"]',
       '}',
-      'Use matchedProductIds from the given catalog only. Include 1-5 most relevant products.'
+      '',
+      'IMPORTANT for "message":',
+      '- Keep it short and friendly (2-4 sentences max).',
+      '- If user preferences indicate they like certain colors/categories that match recommended products,',
+      '  mention it naturally (e.g., "Since you seem to like white and navy..." or "Given your style preferences...").',
+      '- Do NOT mention products that are not in matchedProductIds.',
+      '- Use matchedProductIds from the given catalog only. Include 1-5 most relevant products.'
     ].join('\n')
   });
 

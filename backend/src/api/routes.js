@@ -23,6 +23,11 @@ const {
   getDebugLogs, 
   clearDebugLogs 
 } = require('./debug.controller');
+const {
+  getProfiles,
+  getProfile,
+  clearProfiles
+} = require('./profile.controller');
 
 const router = express.Router();
 
@@ -153,5 +158,23 @@ router.post('/cart/:tenantId/checkout', checkoutCartEndpoint);
  */
 router.get('/debug/logs', getDebugLogs);
 router.post('/debug/logs/clear', clearDebugLogs);
+
+/**
+ * Profile debug endpoints
+ * GET /debug/profiles - View all user preference profiles
+ * GET /debug/profiles/:tenantId/:sessionId - Get a specific profile
+ * DELETE /debug/profiles - Clear all profiles
+ * 
+ * These endpoints are for development/debugging only.
+ * Profiles track user preferences learned from product interactions:
+ * - likedCategories: Categories the user has interacted with
+ * - likedColors: Colors from matched products
+ * - likedTags: Tags from matched products
+ * - interactionCount: Number of queries made
+ * - recentProductIds: Last 10 matched product IDs
+ */
+router.get('/debug/profiles', getProfiles);
+router.get('/debug/profiles/:tenantId/:sessionId', getProfile);
+router.delete('/debug/profiles', clearProfiles);
 
 module.exports = router;
