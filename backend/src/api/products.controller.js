@@ -8,10 +8,14 @@ const { loadProductsForTenant, getProductById, getProductsByCategory, getProduct
 /**
  * Get all products for a tenant
  * GET /products/:tenantId
+ * 
+ * Query params:
+ * - q: Optional search term to filter products by name, description, category, tags
  */
 async function getProductsForTenant(req, res) {
   try {
     const { tenantId } = req.params;
+    const q = (req.query.q || '').toString().toLowerCase().trim();
     
     if (!tenantId) {
       return res.status(400).json({
@@ -23,11 +27,30 @@ async function getProductsForTenant(req, res) {
     // Load products for the tenant
     const products = await loadProductsForTenant(tenantId);
     
+    // Apply search filter if q param provided
+    let filtered = products;
+    if (q) {
+      filtered = products.filter((p) => {
+        const fields = [
+          p.name,
+          p.description,
+          p.category,
+          ...(Array.isArray(p.tags) ? p.tags : [])
+        ]
+          .filter(Boolean)
+          .join(' ')
+          .toLowerCase();
+
+        return fields.includes(q);
+      });
+    }
+    
     return res.status(200).json({
       success: true,
       tenantId,
-      count: products.length,
-      products
+      ...(q && { searchQuery: q }),
+      count: filtered.length,
+      products: filtered
     });
   } catch (error) {
     console.error('❌ Error in getProductsForTenant:', error);

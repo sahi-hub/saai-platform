@@ -1,5 +1,6 @@
 const express = require('express');
 const { handleChat } = require('./chat.controller');
+const { handleAssistantQuery } = require('./assistant.controller');
 const { getTenantInfo } = require('./tenant.controller');
 const { 
   getProductsForTenant, 
@@ -34,6 +35,30 @@ const router = express.Router();
  * Will be extended with tenant loader, orchestrator, memory, and adapters
  */
 router.post('/chat', handleChat);
+
+/**
+ * Assistant query endpoint
+ * POST /assistant/query
+ * 
+ * Unified endpoint for text-based and image-based AI queries
+ * Uses Gemini Flash Vision for multimodal understanding
+ * 
+ * Request body:
+ * - tenantId: Tenant identifier (required)
+ * - sessionId: Session ID for rate limiting (optional)
+ * - message: User text message (optional)
+ * - imageBase64: Base64-encoded image (optional)
+ * 
+ * At least one of message or imageBase64 must be provided.
+ * Rate limited to 20 requests per minute per session.
+ * 
+ * Response:
+ * - success: boolean
+ * - reply: AI-generated response text
+ * - matchedProductIds: Array of matched product IDs from catalog
+ * - error: Error message if success is false
+ */
+router.post('/assistant/query', handleAssistantQuery);
 
 /**
  * Tenant information endpoint
