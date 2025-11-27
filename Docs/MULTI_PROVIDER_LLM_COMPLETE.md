@@ -50,9 +50,9 @@ NODE_ENV=development
 LLM_PRIORITY=GROQ,GEMINI,MISTRAL,MOCK
 
 # LLM API Keys
-GROQ_API_KEY=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
-GEMINI_API_KEY=AIzaSyB7Cu0PXR7vOwfje0CtwmnhSD5gzjXv15c
-MISTRAL_API_KEY=IO1AkU628BeDQicD5emWZmGfMtMZWLNv
+GROQ_API_KEY=your_groq_api_key_here
+GEMINI_API_KEY=your_gemini_api_key_here
+MISTRAL_API_KEY=your_mistral_api_key_here
 ```
 
 ### Configuration Options
