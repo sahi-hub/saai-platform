@@ -1,0 +1,621 @@
+SAAI – Smart Autonomous AI Commerce Agent
+Product Requirements Document (PRD)
+Version: 2.0 (Multi-tenant, AI-Driven E-Commerce Assistant Platform)
+Owner: Sahir
+Date: Latest
+
+
+1. Overview
+
+SAAI is an autonomous AI sales agent that integrates into any e-commerce application (mobile or web).
+It acts as a personal shopping assistant capable of:
+
+Conversational search
+
+Personalized recommendations
+
+Visual (image-based) search
+
+Outfit generation
+
+Cart & order automation
+
+App automation commands
+
+Contextual reasoning
+
+Multi-turn memory
+
+Customer preference learning
+
+Tool-driven actions (add to cart, checkout, search)
+
+Multi-tenant SaaS deployment
+
+SAAI can be integrated into:
+
+Android/iOS mobile app
+
+Web application
+
+POS system
+
+In-store tablet kiosk
+
+Embedded standalone SAAI portal (client1.saai.pro)
+
+2. Key Product Goals
+2.1 For End Users
+
+Give a human-like AI shopping assistant
+
+Understand user intent deeply
+
+Provide accurate, personalized, context-aware product suggestions
+
+Make buying as easy as:
+“Add the white shirt with navy pants and cheaper shoes.”
+
+2.2 For Business Owners
+
+Increase sales via:
+
+Upselling
+
+Cross-selling
+
+Outfit bundling
+
+Personalized product suggestions
+
+Reduce customer support cost
+
+Increase cart conversions
+
+Provide a plug-and-play AI system without exposing internal code
+
+2.3 For SAAI (platform provider)
+
+Support multi-tenant architecture
+
+Allow independent hosting of UI + backend for each client
+
+Provide centralized management from saai.pro
+
+3. System Architecture (High Level)
+3.1 Components
+
+Frontend (Tenant UI)
+
+Hosted on Vercel
+
+Modern AI-shopping interface
+
+Multi-tenant UI configuration
+
+Chat + products + outfit recommendations
+
+Backend (API)
+
+Node.js microservice
+
+Hosted on Render / Railway / Cloudflare
+
+Handles:
+
+Product search
+
+Recommendation engine
+
+Tool execution
+
+Cart & order logic
+
+LLM orchestration
+
+Tenancy configuration
+
+LLM Providers (Failover Architecture)
+
+Groq → Gemini → Mistral automatic fallback
+
+Toolcalling supported by all
+
+Load balancing when required
+
+Product Recommendation Engine
+
+Embedding model (Google OR Gemini embeddings)
+
+Vector similarity search
+
+Multi-attribute ranking:
+
+Style
+
+Color
+
+Price
+
+Occasion tags
+
+Personalized vectors
+
+Multi-Tenant Configuration Layer
+
+Tenant registry file
+
+Tenant-specific:
+
+Branding
+
+Product inventory
+
+Feature toggles
+
+Action handlers
+
+LLM personality
+
+SAAI Personality Framework
+
+Tone engine
+
+Behavior engine
+
+Instruction encoder
+
+Context compressor
+
+Preference memory
+
+4. Core Features
+
+Below are all features, grouped by module.
+
+4.1 Conversational AI
+4.1.1 Text Chat Engine
+
+Natural language conversation
+
+Intent detection
+
+Query understanding
+
+Multi-turn reasoning
+
+Product-aware conversations
+
+Context preservation
+
+Conversation history per session
+
+4.1.2 Grounded AI
+
+AI must only reference products available in tenant catalog
+
+Avoid hallucination
+
+Strict catalog validation
+
+Every answer backed by:
+
+productContext
+
+styleProfile
+
+recentResultsContext
+
+4.1.3 Image Chat Engine
+
+Upload image
+
+Gemini Vision analysis:
+
+Identify clothing
+
+Identify color
+
+Identify style
+
+Identify matching category
+
+Return:
+
+Suggested products
+
+Outfit ideas
+
+4.2 Product Intelligence Engine
+4.2.1 Vector Search
+
+Each product stored with vector embeddings
+
+Similarity based on:
+
+Color
+
+Tags
+
+Category
+
+Description
+
+Style
+
+4.2.2 Neural Ranking
+
+Combine:
+
+Query semantics
+
+User preference vectors
+
+Product similarity
+
+Occasion detection (eid, party, casual)
+
+4.2.3 Outfit Builder
+
+Choose:
+
+Shirt
+
+Pants
+
+Shoes
+
+Based on:
+
+Style intent
+
+Color palette
+
+Occasion
+
+User preference memory
+
+4.3 Personalization Layer
+4.3.1 User Style Profile
+
+Built per (tenantId, sessionId)
+
+Stores:
+
+Preferred colors
+
+Preferred categories
+
+Repeatedly clicked products
+
+Rejected products
+
+Price comfort zone
+
+4.3.2 Memory Scoring
+
+Each preference weighted:
+
++1 for each positive interaction
+
++0.5 for category matches
+
+–1 for disliked items
+
+4.3.3 Explainable AI Output
+
+AI says things like:
+
+“Since you like white shirts…”
+
+“You often check navy chinos, so here’s a matching outfit…”
+
+4.4 Commerce Automation (Tool Calling)
+4.4.1 Tools
+Action	Description
+search_products	Query catalog
+add_to_cart	Add product by ID
+remove_from_cart	Remove product
+view_cart	Retrieve cart
+checkout	Checkout with payment & address
+view_orders	List previous orders
+get_order_status	Order tracking
+cancel_order	Order cancellation
+4.4.2 AI Behavior Rules
+
+AI must NEVER say “I added to cart” without tool call
+
+AI must request missing fields for checkout
+
+AI must ask clarifying questions if ambiguous
+
+AI must fallback only if model fails (Groq → Gemini → Mistral)
+
+4.5 Conversation Intelligence
+4.5.1 Contextual references
+
+AI understands:
+
+“the first one”
+
+“second one but cheaper”
+
+“similar to that kurta”
+
+“replace the shirt with denim”
+
+“show alternatives”
+
+4.5.2 Resolution Engine
+
+Maintains a mapping:
+
+recentProductsContext:
+
+[
+  { index: 1, id: p101, name: "White Shirt" },
+  { index: 2, id: p104, name: "Navy Chinos" }
+]
+
+4.5.3 Occasion intelligence
+
+Detects:
+
+eid
+
+party
+
+office
+
+casual
+
+wedding
+
+travel
+
+5. Multi-Tenant Architecture
+5.1 Features
+
+Each tenant has:
+
+Subdomain (client1.saai.pro)
+
+Branding
+
+Product inventory
+
+Theme (colors, gradient, typography)
+
+Feature toggles
+
+LLM persona (luxury, budget, casual, technical)
+
+5.2 Isolation
+
+Each tenant fully isolated:
+
+API calls
+
+Style profile
+
+Recent product context
+
+Cart & orders
+
+LLM prompt tailoring
+
+5.3 Deployment
+
+Frontend: Vercel → subdomain per tenant
+
+Backend: Render / Cloudflare Workers
+
+Cron Ping: Cloudflare Worker scheduled job
+
+6. UI Requirements (Advanced Polish)
+6.1 Layout
+
+Split Screen:
+
+Left: Chat pane
+
+Right: Product grid
+
+Mobile:
+
+Chat primary
+
+Product grid collapsible
+
+6.2 Chat UX
+
+Animated typing indicator
+
+Bubble-based messages
+
+Smooth scroll
+
+Image preview bubble
+
+Rich product cards inside chat
+
+6.3 Product Grid
+
+2-column layout
+
+Animated hover
+
+Category chips
+
+Skeleton loading screen
+
+“Add to cart” animations
+
+6.4 Context-aware Highlighting
+
+When AI returns matchedProductIds → highlight those products
+
+When user interacts → recent context updated
+
+6.5 Error / Empty States
+
+“No products found”
+
+AI error bubbles
+
+Friendly fallback messages
+
+7. App Automation (Future Module)
+
+SAAI will later automate user actions inside the client app:
+
+7.1 Supported actions
+
+Navigate:
+
+Go to cart
+
+Open home
+
+View categories
+
+Change user details:
+
+Update profile settings
+
+Change language
+
+Change theme
+
+Trigger service modules:
+
+Track order
+
+View wishlist
+
+Apply coupons
+
+7.2 Method
+
+Tool API exposed by client via:
+
+API gateway
+
+Deep links
+
+In-app commands
+
+7.3 AI behavior
+
+AI will turn natural language into automation commands:
+
+User: “Take me to my orders.”
+AI: Calls navigate.orders
+
+User: “Turn on dark mode.”
+AI: Calls settings.updateTheme({ mode: “dark” })
+
+8. Non-Functional Requirements
+8.1 Performance
+
+LLM response < 700ms (Groq)
+
+Product search < 150ms
+
+Recommendations < 300ms
+
+8.2 Reliability
+
+Provider fallback:
+Groq → Gemini → Mistral
+
+Tenants sandboxed
+
+Rate limited at LLM gateway
+
+8.3 Security
+
+No sensitive data sent to LLM
+
+API gateway auth required
+
+Tenant keys stored securely
+
+8.4 Scalability
+
+Stateless microservices
+
+Multi-tenant load balancing
+
+CDN cache for assets
+
+9. Future Expansion
+9.1 SaaI Commerce OS
+
+Full AI agent embedded inside apps
+
+Conversation-led navigation
+
+Voice-based commerce
+
+Real memory (long-term customer profiles)
+
+9.2 SaaI Shopify Plugin
+9.3 SaaI WooCommerce Plugin
+9.4 SaaI Retail Kiosk version
+9.5 SaaI “Auto Seller” (self-generating sale campaigns)
+10. Acceptance Criteria
+Conversation UX
+
+AI understands product queries correctly
+
+AI never hallucinates unavailable items
+
+AI handles multi-item commands
+
+AI resolves “first one / second one”
+
+AI remembers preferences within session
+
+Product Search
+
+Filter + highlight matched products
+
+Image search is stable and accurate
+
+No empty states unless truly empty
+
+Checkout
+
+Full order flow (when client APIs ready)
+
+Missing fields → AI asks for details
+
+Order history works per session
+
+Multi-Tenant
+
+Deploy multiple tenants with independent branding
+
+Backend responds per tenant settings
+
+Conclusion
+
+This PRD defines the complete SAAI platform as it exists today, plus the future direction.
+Any developer or company can use this to understand:
+
+Architecture
+
+Modules
+
+Behaviors
+
+AI logic
+
+Multi-tenant framework
+
+UI/UX expectations
+
+Integration model
+
+This is the master document for the SAAI AI-Commerce Engine.
