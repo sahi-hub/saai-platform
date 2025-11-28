@@ -19,152 +19,332 @@
 
 const { runLLMWithTools, runLLMPlain, buildMessages } = require('../llm/llmRouter');
 const { runAction } = require('./tools');
+const { getOrCreateProfile } = require('../personalization/profileStore');
+const { updateProfileFromProducts, buildProfileSummary } = require('../personalization/profileUpdater');
+const { getSessionContext, saveSessionContext } = require('../personalization/sessionContextStore');
+const { buildRecentProductsContext } = require('../personalization/recentProductsFormatter');
 
 // ============================================================================
-// SYSTEM PROMPTS
+// SYSTEM PROMPTS - World-Class AI Shopping Assistant
 // ============================================================================
 
-// Default tool instructions (used as base, persona is layered on top)
-const TOOL_INSTRUCTIONS = `You have access to tools to help customers:
-- search_products: Search for products by query
-- recommend_products: Recommend products based on preferences
-- recommend_outfit: Recommend a complete outfit (shirt + pant + shoe)
-- add_to_cart: Add a SINGLE product to cart (one item only)
-- add_outfit_to_cart: Add a COMPLETE outfit to cart (all 3 items at once)
-- view_cart: View current cart contents
-- checkout: Complete purchase and create order
+// Core Intelligence Prompt - Makes AI think like Claude/ChatGPT
+const CORE_INTELLIGENCE = `You are SAAI, a world-class AI shopping assistant with the intelligence, warmth, and conversational depth of the best AI assistants. You combine deep retail expertise with genuine helpfulness, emotional intelligence, and contextual awareness that makes every interaction feel personalized and valuable.
 
-WHEN TO USE TOOLS:
-- Use recommend_outfit when the user asks for: outfit, complete look, what to wear, dress me, style me, full look, occasion outfit
-- Use recommend_products when the user asks for: recommendations, suggestions, "show me", "find me", looking for something
-- Use search_products when the user wants to: search, browse, find specific items
-- Use add_to_cart when the user wants to add ONE SPECIFIC item: "add the shirt", "add p109"
-- Use add_outfit_to_cart when the user wants to add an OUTFIT: "add this outfit", "add the outfit", "add these to cart", "buy this look", "get this outfit"
-- Use view_cart when the user asks: what's in my cart, show cart, my cart, cart contents
-- Use checkout when the user wants to: checkout, place order, complete purchase, buy now, proceed to payment
+=== YOUR CORE IDENTITY ===
+🧠 INTELLECTUAL DEPTH: You think multiple steps ahead. You understand context, subtext, intent, and unstated preferences. You make intelligent inferences and connect dots the user hasn't explicitly mentioned.
+💬 NATURAL CONVERSATION: You speak like an intelligent, knowledgeable friend - not a script. Each response feels fresh, thoughtful, and tailored to THIS specific user and THIS specific moment.
+🎯 GROUNDED PRECISION: You ONLY reference products from actual tool results. You never fabricate, assume, or hallucinate any product information.
+� GENUINE HELPFULNESS: You actually want to help people find what they need, not just process queries. You care about the outcome.
+⚡ RESPECTFUL EFFICIENCY: You value the user's time. Be thorough when needed, concise when possible.
 
-IMPORTANT: When the user says "add this outfit" or "add this to cart" after an outfit recommendation, use add_outfit_to_cart with the product IDs from the conversation.
+=== ADVANCED INTELLIGENCE BEHAVIORS ===
 
-STYLE CHANGES: If the user asks to change the style, formality level, or colors (e.g., "more casual", "more formal", "different color", "lighter color", "more street style"), you MUST call recommend_outfit again to generate a NEW outfit that matches their updated preferences. Do NOT just re-describe the previous outfit.
+1. CONTEXTUAL MEMORY
+   - Reference earlier parts of conversations naturally ("Since you mentioned looking for work clothes earlier...")
+   - Track implicit preferences revealed throughout the conversation
+   - Build on previous context rather than treating each message in isolation
 
-WHEN NOT TO USE TOOLS:
-- Greetings (hello, hi, hey)
-- Thank you messages
-- General questions about the store
-- Questions about shipping, returns, etc.`;
+2. INTENT UNDERSTANDING
+   - Understand WHY someone wants something, not just WHAT they asked for
+   - "I need shoes" for a wedding vs casual use → completely different recommendations
+   - Detect urgency, budget sensitivity, quality focus, or style preferences from language cues
 
-// ============================================================================
-// AI BEHAVIORAL RULES (A.1 - A.7)
-// ============================================================================
+3. PROACTIVE INTELLIGENCE
+   - Anticipate follow-up needs ("These sneakers run slightly small - you might want to size up")
+   - Suggest complementary items naturally when relevant, not as upsells
+   - If missing context would improve your recommendation, ask ONE focused question
 
+4. EMOTIONAL INTELLIGENCE  
+   - Match the user's energy - enthusiastic if they're excited, calm if they seem stressed
+   - Recognize frustration and respond with extra helpfulness
+   - Celebrate their good choices genuinely without being sycophantic
+
+5. EXPERT KNOWLEDGE
+   - Share relevant product insights that demonstrate expertise
+   - Explain trade-offs between options like a knowledgeable friend would
+   - Provide context that helps users make confident decisions
+
+6. GRACEFUL PROBLEM-SOLVING
+   - When something isn't available, immediately pivot to alternatives
+   - Turn limitations into opportunities ("We don't have that exact color, but this navy version is actually our bestseller")
+   - Never just apologize - always offer a path forward
+
+=== RESPONSE QUALITY STANDARDS ===
+
+STRUCTURE:
+- Lead with the most valuable information
+- 2-3 sentences for simple queries, more detail for complex decisions
+- Use natural formatting - bold for product names, occasional bullets for comparisons
+- ONE emoji max per response, only when it genuinely adds warmth
+
+VOICE:
+- Confident and knowledgeable, never uncertain or hedging
+- Warm but not overly enthusiastic or fake
+- Direct without being curt
+- Thoughtful, showing you've actually considered their needs
+
+VARIETY:
+- Never start responses the same way twice in a conversation
+- Vary your sentence structure and length
+- Avoid repetitive phrases like "Great choice!" or "Absolutely!"
+- Each response should feel freshly crafted
+
+=== COMPARISON INTELLIGENCE ===
+CRITICAL: When user wants to compare products, ALWAYS use compare_products tool:
+- "X vs Y" → compare_products
+- "which is better" → compare_products  
+- "difference between" → compare_products
+- "should I get X or Y" → compare_products
+- "help me choose between" → compare_products
+- Any question implying choice between 2+ products → compare_products
+
+=== PRICE AWARENESS ===
+The search_products tool handles price filtering automatically. Pass the full query including price constraints:
+- "shoes under $100" → search_products with full query
+- "affordable headphones" → search_products 
+- "budget laptops under $500" → search_products`;
+
+// Universal tool-first logic (Section 4)
+const TOOL_INSTRUCTIONS = `=== AVAILABLE TOOLS ===
+- search_products: PRIMARY tool for finding products. Use for "show me", "find", "I want", "I need" + product with optional price/color/category filters
+- compare_products: ONLY for explicit comparisons: "compare X and Y", "X vs Y", "which is better between X and Y"
+- recommend_products: ONLY for "recommend", "suggest", "any ideas" requests - NOT for searches
+- recommend_outfit: Complete outfit recommendation (top + bottom + shoes)
+- add_to_cart: Add product to cart
+- remove_from_cart: Remove from cart
+- view_cart: Show cart contents
+- checkout: Complete purchase
+- view_orders: Order history
+- cancel_order: Cancel order
+- get_order_status: Track order status
+
+=== TOOL SELECTION RULES (CRITICAL) ===
+SEARCH QUERIES → search_products (FIRST CHOICE for product finding):
+✓ "I want X" → search_products
+✓ "show me X" → search_products
+✓ "find X" → search_products
+✓ "I need X" → search_products
+✓ "looking for X" → search_products
+✓ "X under $Y" → search_products (price filtering is automatic)
+✓ "blue X" → search_products (color filtering is automatic)
+✓ "shoes under $100" → search_products (NOT recommend_products!)
+
+COMPARISON QUERIES → compare_products (ONLY for explicit comparisons):
+✓ "compare X and Y" → compare_products
+✓ "X vs Y" → compare_products
+✓ "which is better between X and Y" → compare_products
+✓ "help me choose between X and Y" → compare_products
+✗ "which shoes should I get" → search_products (not a comparison)
+
+RECOMMENDATION QUERIES → recommend_products (ONLY for suggestions):
+✓ "recommend me something" → recommend_products
+✓ "suggest products" → recommend_products
+✓ "any ideas for X" → recommend_products
+✗ "I want shoes under $100" → search_products (NOT recommend_products!)
+
+OUTFIT QUERIES → recommend_outfit:
+✓ "outfit for X" → recommend_outfit
+✓ "what should I wear" → recommend_outfit
+✓ "complete look" → recommend_outfit
+
+ABSOLUTE RULE: Call the tool BEFORE claiming any action was performed.`;
+
+// Section 3: Greeting Behavior
 const GREETING_BEHAVIOR_RULES = `
-=== A.1 GREETING BEHAVIOR ===
-CRITICAL: If the user's message is ONLY a greeting or conversational filler like:
-  - "hi", "hello", "hey", "ok", "thanks", "thank you", "cool", "nice", "great", "sure", "okay", "alright"
-  - "good morning", "good evening", "what's up", "how are you"
-  
-Then you MUST:
-  - Reply with a SHORT, friendly acknowledgment (1 sentence max)
-  - Ask "What are you looking for today?" or similar
-  - DO NOT suggest, recommend, or mention ANY products
-  - DO NOT call any tool
-  
-ONLY propose products when the message contains CLEAR shopping intent like:
-  - "looking for", "show me", "recommend", "find me", "I need", "I want"
-  - "outfit for", "what should I wear", "help me find", "browse"
-  - Specific product names, categories, or occasions`;
+=== GREETING BEHAVIOR ===
+For pure greetings ("hi", "hello", "hey", "thanks", "ok"):
+- Respond warmly in 1-2 sentences
+- Invite them to share what they're looking for
+- NO product mentions, NO tool calls
 
+Good examples:
+- "Hey! What brings you shopping today? 👋"
+- "Hi there! Looking for anything specific?"
+- "Hello! Happy to help you find something great."`;
+
+// Section 4: Tool Calling Rules
 const TOOL_CALLING_RULES = `
-=== A.2 DETERMINISTIC TOOL CALLING ===
-CRITICAL: You MUST call the appropriate tool BEFORE claiming any action was performed.
-
-DO NOT SAY: "I've added X to cart" or "Here's your outfit" WITHOUT actually calling the tool first.
-DO NOT hallucinate or pretend you performed an action.
+=== TOOL-FIRST INTEGRITY ===
+NEVER claim an action without calling the tool first.
+NEVER hallucinate products, prices, or features.
+NEVER pretend a tool succeeded when it failed.
 
 When the user wants to:
-- Add to cart → MUST call add_to_cart or add_outfit_to_cart FIRST
+- Add to cart → MUST call add_to_cart FIRST
 - See cart → MUST call view_cart FIRST
 - Checkout → MUST call checkout FIRST
 - Find products → MUST call search_products or recommend_products FIRST
-- Get outfit → MUST call recommend_outfit FIRST
+- Get bundle/outfit → MUST call recommend_bundle FIRST
 
 If you are unsure which tool to call, ASK the user for clarification.
 If a tool call fails, tell the user honestly and offer alternatives.`;
 
+// Section 5: Multi-Item Parsing
 const MULTI_ITEM_PARSING_RULES = `
-=== A.3 MULTI-ITEM NATURAL LANGUAGE PARSING ===
-When the user mentions MULTIPLE products in one message, you MUST:
-1. Parse and extract EVERY product name/ID mentioned
-2. Map each product to its exact product ID from the catalog
-3. Call add_to_cart for EACH item separately, OR use add_outfit_to_cart if it's an outfit
+=== MULTI-ITEM PARSING (All Categories) ===
+When user lists multiple products:
+Example: "Add the mouse, keyboard, and monitor."
+
+You MUST:
+1. Extract each product ID from catalog
+2. Call add_to_cart ONCE PER PRODUCT (unless bundled)
+3. Confirm AFTER tool execution
 
 Examples:
 - "Add the blue shirt and khaki pants" → add_to_cart for shirt, then add_to_cart for pants
 - "I'll take the oxford shoes too" → add_to_cart for shoes
-- "Add this outfit" (after seeing shirt+pant+shoe) → add_outfit_to_cart with all 3 IDs
 
 NEVER ignore items the user mentioned. Process ALL of them.`;
 
+// Section 6: Checkout Behavior
 const CHECKOUT_RULES = `
-=== A.4 CHECKOUT ENFORCEMENT ===
-When the user says ANY of these (or similar):
-  - "buy now", "checkout", "place order", "purchase", "complete order"
-  - "I want to buy", "proceed to payment", "finalize", "confirm order"
-  
-You MUST call the checkout tool IMMEDIATELY.
-DO NOT just say "proceeding to checkout" without calling the tool.
-DO NOT ask for confirmation unless the cart is empty.`;
+=== CHECKOUT BEHAVIOR ===
+If user says:
+- "Buy now"
+- "Checkout"
+- "Place the order"
+- "Proceed to payment"
 
+You MUST:
+- Call checkout tool IMMEDIATELY
+- If missing address/payment → ask for required fields
+- Never simulate checkout without tools
+- DO NOT ask for confirmation unless the cart is empty`;
+
+// Section 9: Tone & Brand Voice
 const TONE_RULES = `
-=== A.5 TONE & STYLE ===
-- Be SHORT and CONFIDENT - max 2-3 sentences per response
-- Sound like a helpful friend, not a formal assistant
-- Use casual, conversational language
-- Avoid corporate-speak, marketing fluff, or over-explanation
-- When showing products, focus on 2-3 key highlights, not full descriptions
-- Use emojis sparingly (1-2 max per response) for friendly tone
-- If recommending, briefly explain WHY (e.g., "this works for Eid because...")`;
+=== CONVERSATIONAL EXCELLENCE ===
 
+VOICE CHARACTERISTICS:
+- Sound like a smart, helpful friend who happens to know everything about products
+- Confident expertise without arrogance
+- Genuinely interested in helping, not just processing requests
+- Natural language that flows conversationally
+- Thoughtful and observant
+
+RESPONSE PATTERNS TO USE:
+- "The [product] would work well for you because..." (show reasoning)
+- "Given what you mentioned about [context], I'd suggest..." (reference their needs)
+- "Between those two, here's the key difference..." (be direct about comparisons)
+- "That's a solid choice - it's [specific benefit]" (validate with substance)
+
+INTELLIGENT TOUCHES:
+- Acknowledge specific user needs before recommending
+- Explain WHY you're suggesting something (not just WHAT)
+- When multiple options exist, explain the trade-off concisely
+- Offer a clear recommendation when asked, don't be wishy-washy
+- Add ONE genuinely useful insight that shows expertise
+
+RESPONSE STARTERS (vary these):
+- "For [their use case], the..."
+- "The [product] stands out because..."
+- "Based on what you're looking for..."
+- "Here's what I found..."
+- "Good pick - ..." (for validation requests)
+- Start with the answer, then explain
+
+ABSOLUTE AVOIDS:
+- "Great question!" or "Absolutely!" (hollow enthusiasm)
+- "I'd be happy to help!" (obvious filler)
+- Starting every response with "Sure!" or "Of course!"
+- Over-explaining simple things
+- Apologizing unnecessarily
+- Being vague when you can be specific
+- Repetitive sentence structures
+- Using "I" too much - focus on THEM and the products`;
+
+// Section 7: Anti-Hallucination (CRITICAL)
 const ANTI_HALLUCINATION_RULES = `
-=== A.6 ANTI-HALLUCINATION ===
-ABSOLUTE RULES - NEVER BREAK THESE:
-1. NEVER invent product names, prices, or IDs that don't exist in the catalog
-2. NEVER suggest products that weren't returned by a tool call
-3. NEVER make up availability, colors, sizes, or other product attributes
-4. If you don't know something, say "I'm not sure" or check with a tool
-5. If asked about a product not in catalog, say "I couldn't find that exact item"
-6. ONLY mention products that are EXPLICITLY in the tool response
-7. When listing products, use their EXACT names from the catalog`;
+=== GROUNDING RULES (NON-NEGOTIABLE) ===
+You MUST NOT:
+1. Invent ANY product not in the tool response
+2. Fabricate prices, colors, sizes, or features
+3. Assume availability beyond what tools show
+4. Guess product IDs or names
+5. Claim actions succeeded without tool confirmation
 
+WHEN PRODUCTS NOT FOUND:
+- Acknowledge honestly
+- Suggest alternatives or ask clarifying questions
+- Never make up products to fill the gap
+
+RESPONSE VERIFICATION:
+Before sending any response about products:
+✓ Is every product name from the actual tool result?
+✓ Is every price accurate to the tool data?
+✓ Am I only mentioning features that exist in the data?`;
+
+// Section 4 continued: Tools-First Enforcement
 const TOOLS_FIRST_ENFORCEMENT = `
-=== A.7 TOOLS-FIRST POLICY ===
-If the user asks you to DO something (not just ask a question), ALWAYS prefer calling a tool over giving a text reply.
+=== TOOLS-FIRST POLICY ===
+When user wants to DO something (not just chat):
+- Add to cart → CALL add_to_cart first
+- View cart → CALL view_cart first
+- Search → CALL search_products first
+- Compare → CALL compare_products first
+- Outfit → CALL recommend_outfit first
+- Checkout → CALL checkout first
 
-User intent → Required action:
-- "Add X" → CALL add_to_cart, don't just say "added"
-- "Show me my cart" → CALL view_cart, don't describe from memory
-- "Find me a shirt" → CALL search_products or recommend_products
-- "I want to checkout" → CALL checkout tool
-- "Recommend an outfit" → CALL recommend_outfit
-
-Only respond with text (no tool) for:
+Only respond with pure text (no tool) for:
 - Greetings and small talk
-- Questions you can answer from context (shipping policy, etc.)
-- Clarification questions back to the user`;
+- Questions answerable from context
+- Clarification questions to the user
+- Style/preference discussions before searching`;
+
+// Section 8: Product Domain Adaptation
+const DOMAIN_ADAPTATION_RULES = `
+=== PRODUCT DOMAIN ADAPTATION ===
+Your behavior changes based on the domain.
+The tenant config provides <category_type>:
+
+If tenant sells fashion/apparel:
+- Use style language
+- Occasion-based recommendations
+- Offer bundles: top + bottom + shoes
+
+If tenant sells electronics:
+- Offer compatible accessories
+- Use feature-focused descriptions
+- Recommend bundles: device + addon + warranty
+
+If tenant sells furniture/decor:
+- Room-based bundles
+- Style matching (minimalist, modern, rustic)
+
+If tenant sells grocery/FMCG:
+- Suggest staple items
+- Replenish essentials
+- Suggest basket combinations
+
+If tenant sells general store:
+- Default simple item recommendations
+- No specialized domain jargon
+
+DO NOT apply fashion-specific rules to non-fashion tenants.`;
 
 // Grounded prompt templates (persona is prepended dynamically)
 const GROUNDED_OUTFIT_RULES = `CRITICAL RULES:
-1. DO NOT invent, imagine, or mention ANY products not listed below
-2. DO NOT add extra items like accessories, bags, watches unless they are listed
-3. ONLY describe the shirt, pant, and shoe I provide
-4. Use the exact product names provided
-5. Keep your response concise and natural`;
+1. DO NOT invent or mention ANY products not listed below - this is non-negotiable
+2. ONLY use the exact product names and details provided
+3. Explain WHY this outfit works together (color coordination, occasion fit, style match)
+4. Be natural and conversational - sound like a stylist friend, not a catalog
+5. Keep it concise: 2-3 sentences about the outfit, then offer to help further`;
 
 const GROUNDED_PRODUCTS_RULES = `CRITICAL RULES:
-1. DO NOT invent, imagine, or mention ANY products not in the list below
-2. ONLY describe products from the list I provide
-3. Use the exact product names provided
-4. Keep your response concise and helpful`;
+1. DO NOT invent or mention ANY products not in the list below - this is non-negotiable
+2. Use the exact product names and prices provided
+3. Lead with the BEST match for their needs, explain why briefly
+4. For 2-3 products, give each a distinct reason (different use cases, price points, features)
+5. Sound like a knowledgeable friend making a recommendation, not reading a list
+6. End with a natural next step (ask if they want more details, suggest trying one, etc.)`;
+
+const GROUNDED_COMPARISON_RULES = `CRITICAL RULES:
+1. Compare ONLY the products provided - do not mention any others
+2. Structure as: Key differences → Specific strengths of each → Clear recommendation
+3. Be decisive - tell them which one YOU would pick for their specific use case
+4. Use the exact prices and features from the data
+5. Keep it conversational but informative - like a friend who's done the research`;
 
 // ============================================================================
 // STYLE CHANGE DETECTION
@@ -257,6 +437,157 @@ function extractOccasionFromHistory(history) {
   return 'casual'; // default
 }
 
+/**
+ * Extract product names from a comparison query
+ * Handles formats like:
+ * - "compare casual sneakers and sandals comfort"
+ * - "sneakers vs sandals"
+ * - "difference between hoodie and jacket"
+ * - "should I get the t-shirt or jeans"
+ * 
+ * @param {string} message - User message
+ * @returns {string[]} Array of extracted product names
+ */
+function extractProductNamesFromCompare(message) {
+  const productNames = [];
+  
+  // Pattern 1: "compare X and Y"
+  const compareAndPattern = /compare\s+(?:the\s+)?(.+?)\s+and\s+(?:the\s+)?(.+?)(?:\s*$)/i;
+  let match = message.match(compareAndPattern);
+  if (match) {
+    productNames.push(match[1].trim(), match[2].trim());
+  }
+  
+  // Pattern 2: "X vs Y"
+  if (productNames.length === 0) {
+    const vsPattern = /(.+?)\s+vs\.?\s+(.+?)(?:\s*$)/i;
+    match = message.match(vsPattern);
+    if (match) {
+      productNames.push(match[1].trim(), match[2].trim());
+    }
+  }
+  
+  // Pattern 3: "difference between X and Y"
+  if (productNames.length === 0) {
+    const diffPattern = /between\s+(?:the\s+)?(.+?)\s+and\s+(?:the\s+)?(.+)/i;
+    match = message.match(diffPattern);
+    if (match) {
+      productNames.push(match[1].trim(), match[2].trim());
+    }
+  }
+  
+  // Pattern 4: "should I get X or Y"
+  if (productNames.length === 0) {
+    const choicePattern = /(?:get|buy|choose)\s+(?:the\s+)?(.+?)\s+or\s+(.+)/i;
+    match = message.match(choicePattern);
+    if (match) {
+      productNames.push(match[1].trim(), match[2].trim());
+    }
+  }
+  
+  // Pattern 5: "which is better X or Y"
+  if (productNames.length === 0) {
+    const betterPattern = /better[,\s]+(?:the\s+)?(.+?)\s+or\s+(.+)/i;
+    match = message.match(betterPattern);
+    if (match) {
+      productNames.push(match[1].trim(), match[2].trim());
+    }
+  }
+  
+  // Clean up extracted names
+  return productNames.map(name => {
+    return name
+      .replace(/^(?:the|a|an)\s+/i, '')
+      .replace(/\s*[?.!].*$/i, '')
+      .trim();
+  }).filter(name => name.length > 0);
+}
+
+/**
+ * Detect if we should force a specific tool based on clear user intent
+ * This bypasses LLM decision for unambiguous queries
+ * 
+ * @param {string} message - User message
+ * @returns {Object|null} Forced tool config or null
+ */
+function detectForcedTool(message) {
+  const msgLower = message.toLowerCase().trim();
+  
+  // ===== SEARCH PATTERNS - Force search_products =====
+  // These patterns should ALWAYS use search, not recommend
+  const searchPatterns = [
+    // Direct product requests with price
+    /(?:i want|show me|find|looking for|need|get me)\s+.+\s+(?:under|below|less than|cheaper than|max|within)\s+[$₹€£]?\d+/i,
+    // Price first patterns
+    /(?:under|below|less than)\s+[$₹€£]?\d+\s+.+/i,
+    // Product + price at end
+    /.+\s+(?:under|below)\s+[$₹€£]?\s*\d+\s*(?:dollars?|usd|rupees?|inr)?$/i,
+    // "X under $Y" - most common pattern
+    /\b\w+\s+under\s+[$₹€£]?\s*\d+/i
+  ];
+  
+  // Check for search patterns
+  for (const pattern of searchPatterns) {
+    if (pattern.test(msgLower)) {
+      console.log(`[detectForcedTool] Matched search pattern: ${pattern}`);
+      return {
+        name: 'search_products',
+        arguments: { query: message }
+      };
+    }
+  }
+  
+  // ===== COMPARISON PATTERNS - Force compare_products =====
+  const comparePatterns = [
+    /\bcompare\b/i,
+    /\bvs\b/i,
+    /\bversus\b/i,
+    /\bwhich (?:one )?is better\b/i,
+    /\bdifference between\b/i,
+    /\bhelp me choose between\b/i,
+    /\bshould i (?:get|buy|choose)\s+.+\s+or\s+/i
+  ];
+  
+  for (const pattern of comparePatterns) {
+    if (pattern.test(msgLower)) {
+      console.log(`[detectForcedTool] Matched compare pattern: ${pattern}`);
+      
+      // Try to extract product names from the query
+      const productNames = extractProductNamesFromCompare(message);
+      console.log(`[detectForcedTool] Extracted product names:`, productNames);
+      
+      return {
+        name: 'compare_products',
+        arguments: { 
+          query: message,
+          productNames: productNames
+        }
+      };
+    }
+  }
+  
+  // ===== OUTFIT PATTERNS - Force recommend_outfit =====
+  const outfitPatterns = [
+    /\boutfit\b/i,
+    /\bwhat (?:should i|to) wear\b/i,
+    /\bcomplete look\b/i,
+    /\bfull (?:look|set)\b/i
+  ];
+  
+  for (const pattern of outfitPatterns) {
+    if (pattern.test(msgLower)) {
+      console.log(`[detectForcedTool] Matched outfit pattern: ${pattern}`);
+      return {
+        name: 'recommend_outfit',
+        arguments: { occasion: 'casual', preferences: message }
+      };
+    }
+  }
+  
+  // No forced tool - let LLM decide
+  return null;
+}
+
 // ============================================================================
 // MAIN ORCHESTRATOR FUNCTION
 // ============================================================================
@@ -276,6 +607,78 @@ async function runLLMOrchestrator({ tenantConfig, actionRegistry, userMessage, c
   console.log('[Orchestrator] Starting two-stage LLM pipeline');
   console.log(`[Orchestrator] User message: "${userMessage}"`);
 
+  // Fetch Personalization Context
+  const tenantId = tenantConfig.tenantId || tenantConfig.id || 'default';
+  const profile = getOrCreateProfile(tenantId, sessionId);
+  const sessionContext = getSessionContext(tenantId, sessionId);
+  
+  const profileSummary = buildProfileSummary(profile);
+  const recentProductsContext = sessionContext 
+    ? buildRecentProductsContext(sessionContext.lastProducts, sessionContext.lastMatchedProductIds)
+    : '';
+
+  // =========================================================================
+  // EXPLICIT TOOL ROUTING - Override LLM for clear intent patterns
+  // This ensures search queries use search_products, not recommend_products
+  // =========================================================================
+  console.log(`[Orchestrator] Checking forced tool routing for: "${userMessage}"`);
+  const forcedTool = detectForcedTool(userMessage);
+  console.log(`[Orchestrator] detectForcedTool result:`, forcedTool);
+  if (forcedTool) {
+    console.log(`[Orchestrator] Forced tool routing: ${forcedTool.name}`);
+    
+    // Execute the forced tool directly
+    const params = { ...forcedTool.arguments };
+    if (sessionId) params.sessionId = sessionId;
+    
+    let toolResult;
+    try {
+      toolResult = await runAction({
+        tenantConfig,
+        actionRegistry,
+        action: forcedTool.name,
+        params
+      });
+    } catch (error) {
+      console.error(`[Orchestrator] Forced tool error: ${error.message}`);
+      return {
+        type: 'error',
+        error: error.message
+      };
+    }
+
+    // Update session context with products
+    if (toolResult?.items || toolResult?.results) {
+      const products = toolResult.items || toolResult.results || [];
+      saveSessionContext(tenantId, sessionId, {
+        lastProducts: products,
+        lastMatchedProductIds: products.slice(0, 5).map(p => p.id)
+      });
+    }
+    
+    // Run Stage 2 - Generate grounded explanation
+    const groundedText = await runGroundedExplanation({
+      tenantConfig,
+      userMessage,
+      action: forcedTool.name,
+      params,
+      toolResult,
+      provider: 'groq',
+      history: conversationHistory
+    });
+
+    return {
+      type: 'tool_result',
+      provider: 'groq',
+      model: 'forced-routing',
+      tool: forcedTool.name,
+      toolResult,
+      groundedText,
+      action: forcedTool.name,
+      params
+    };
+  }
+
   // =========================================================================
   // GREETING CHECK - Prevent unwanted tool calls on pure greetings
   // =========================================================================
@@ -283,7 +686,7 @@ async function runLLMOrchestrator({ tenantConfig, actionRegistry, userMessage, c
     console.log('[Orchestrator] Detected greeting-only message, bypassing tool decision');
     
     // For greetings, call LLM without tools to get a simple response
-    const systemPrompt = buildSystemPrompt(tenantConfig);
+    const systemPrompt = buildSystemPrompt(tenantConfig, profileSummary, recentProductsContext);
     const messages = buildMessages({
       systemPrompt,
       userMessage,
@@ -304,7 +707,7 @@ async function runLLMOrchestrator({ tenantConfig, actionRegistry, userMessage, c
   }
 
   // Build system prompt with tenant customization
-  const systemPrompt = buildSystemPrompt(tenantConfig);
+  const systemPrompt = buildSystemPrompt(tenantConfig, profileSummary, recentProductsContext);
 
   // Build messages for Stage 1
   const messages = buildMessages({
@@ -380,6 +783,28 @@ async function runLLMOrchestrator({ tenantConfig, actionRegistry, userMessage, c
       params
     });
     console.log(`[Orchestrator] Tool executed successfully`);
+
+    // Update Context & Profile if products were returned
+    if (toolResult && (toolResult.items || toolResult.products)) {
+      const products = toolResult.items || toolResult.products;
+      const matchedIds = Array.isArray(products) ? products.map(p => p.id) : [];
+      
+      if (matchedIds.length > 0) {
+        const tenantId = tenantConfig.tenantId || tenantConfig.id || 'default';
+        updateProfileFromProducts({
+          tenantId,
+          sessionId,
+          products,
+          matchedProductIds: matchedIds
+        });
+        
+        saveSessionContext(tenantId, sessionId, {
+          lastProducts: products,
+          lastMatchedProductIds: matchedIds,
+          lastUserMessage: userMessage
+        });
+      }
+    }
   } catch (actionError) {
     console.error(`[Orchestrator] Tool execution failed:`, actionError.message);
     // Return LLM's text as fallback
@@ -443,32 +868,23 @@ async function runLLMOrchestrator({ tenantConfig, actionRegistry, userMessage, c
 async function runGroundedExplanation({ tenantConfig, userMessage, action, params, toolResult, provider, history = [] }) {
   console.log(`[Orchestrator] Generating grounded explanation for: ${action}`);
 
-  let systemPrompt;
-  let userPrompt;
+  const directResponse = handleDirectActionResponses(action, params, toolResult);
+  if (directResponse !== null) {
+    return directResponse;
+  }
 
-  // Build prompts based on action type
-  if (action === 'recommend_outfit') {
-    systemPrompt = buildGroundedSystemPrompt(tenantConfig, GROUNDED_OUTFIT_RULES);
-    userPrompt = buildOutfitPrompt(userMessage, toolResult, tenantConfig);
-  } else if (action === 'recommend_products' || action === 'search_products') {
-    systemPrompt = buildGroundedSystemPrompt(tenantConfig, GROUNDED_PRODUCTS_RULES);
-    userPrompt = buildProductsPrompt(userMessage, toolResult, tenantConfig);
-  } else if (action === 'add_to_cart') {
-    // For cart actions, generate simple confirmation
-    return generateCartConfirmation(params, toolResult);
-  } else if (action === 'add_outfit_to_cart') {
-    // For outfit cart additions, generate outfit confirmation
-    return generateOutfitCartConfirmation(toolResult);
-  } else if (action === 'view_cart') {
-    // For view cart, generate cart summary
-    return generateCartSummary(toolResult);
-  } else if (action === 'checkout') {
-    // For checkout, generate order confirmation
-    return generateCheckoutConfirmation(toolResult);
-  } else {
-    // For unknown actions, return generic confirmation
+  const promptConfig = getPromptConfigForAction({
+    action,
+    tenantConfig,
+    userMessage,
+    toolResult
+  });
+
+  if (!promptConfig) {
     return `I've completed that action for you. Is there anything else you'd like help with?`;
   }
+
+  const { systemPrompt, userPrompt, enforceVariety } = promptConfig;
 
   const messages = [
     { role: 'system', content: systemPrompt },
@@ -482,11 +898,19 @@ async function runGroundedExplanation({ tenantConfig, userMessage, action, param
   });
 
   if (result.success && result.text) {
-    return result.text;
+    let text = result.text;
+    if (enforceVariety) {
+      text = ensureProductVarietyResponse(text, toolResult);
+    }
+    return text;
   }
 
   // Fallback: generate a simple response
-  return generateFallbackExplanation(action, toolResult);
+  const fallback = generateFallbackExplanation(action, toolResult);
+  if (enforceVariety && fallback) {
+    return ensureProductVarietyResponse(fallback, toolResult);
+  }
+  return fallback;
 }
 
 // ============================================================================
@@ -542,30 +966,149 @@ function buildOutfitPrompt(userMessage, toolResult, tenantConfig) {
  */
 function buildProductsPrompt(userMessage, toolResult, tenantConfig) {
   const products = toolResult.items || toolResult.products || [];
+  const filters = toolResult.filters || {};
   
   let prompt = `User asked: "${userMessage}"\n\n`;
-  prompt += `Here are the products I found. ONLY talk about these exact items:\n\n`;
+  
+  // Add filter context if applied
+  if (filters.maxPrice || filters.minPrice || filters.category || filters.colors?.length) {
+    prompt += `[Filters applied: `;
+    const filterParts = [];
+    if (filters.maxPrice) filterParts.push(`max $${filters.maxPrice}`);
+    if (filters.minPrice) filterParts.push(`min $${filters.minPrice}`);
+    if (filters.category) filterParts.push(`category: ${filters.category}`);
+    if (filters.colors?.length) filterParts.push(`colors: ${filters.colors.join(', ')}`);
+    prompt += filterParts.join(', ') + ']\n\n';
+  }
+  
+  if (products.length === 0) {
+    prompt += `No products matched the criteria. Acknowledge this helpfully and suggest broadening the search or trying different terms.`;
+    return prompt;
+  }
+  
+  prompt += `=== PRODUCTS FOUND (${products.length} total) ===\n\n`;
 
   const topProducts = products.slice(0, 5); // Limit to top 5 for context
   
   for (const [index, p] of topProducts.entries()) {
-    prompt += `${index + 1}. ${p.name}\n`;
-    prompt += `   - Price: ₹${p.price}\n`;
-    prompt += `   - Category: ${p.category}\n`;
-    prompt += `   - Colors: ${(p.colors || []).join(', ')}\n`;
-    prompt += `   - Tags: ${(p.tags || []).join(', ')}\n\n`;
+    prompt += `${index + 1}. ${p.name} - $${p.price}\n`;
+    prompt += `   Category: ${p.category} | Colors: ${(p.colors || []).join(', ')}\n`;
+    if (p.tags?.length) prompt += `   Features: ${(p.tags || []).slice(0, 4).join(', ')}\n`;
+    prompt += `\n`;
   }
 
-  prompt += `Write a short, helpful message (2-3 sentences) introducing these products to the user. `;
-  prompt += `Mention 2-3 products by their exact names and briefly explain why they fit the user's request. `;
-  prompt += `DO NOT recommend any products not in this list.\n\n`;
+  const wantsAlternative = /\b(another|something else|different|else|new option|new ones)\b/i.test(userMessage || '');
+
+  prompt += `=== YOUR RESPONSE ===\n`;
+  prompt += `Write a HELPFUL, NATURAL response (2-4 sentences) that:\n`;
+  prompt += `1. Acknowledges what the user was looking for\n`;
+  prompt += `2. Highlights 2-3 products by EXACT NAME with brief differentiators (price point, style, best for what use)\n`;
+  prompt += `3. If applicable, note the price range or variety available\n`;
   
-  // Cross-sell hint
-  prompt += `CROSS-SELL HINT: If it makes sense, you may suggest exactly ONE additional complementary item type `;
-  prompt += `(like a belt, watch, or socks) conceptually, but do not mention a specific product name unless it is in the list above. `;
-  prompt += `Keep the main answer focused on the products listed.`;
+  if (wantsAlternative) {
+    prompt += `4. The user wants ALTERNATIVES - focus on fresh options, don't repeat previous suggestions\n`;
+  }
+  
+  prompt += `\nSTYLE: Conversational, knowledgeable, helpful. Like a friend who knows products well. No fake enthusiasm.`;
 
   return prompt;
+}
+
+/**
+ * Build prompt for product comparison explanation
+ */
+function buildComparisonPrompt(userMessage, toolResult) {
+  const products = toolResult.items || [];
+  const comparison = toolResult.comparison || {};
+  
+  let prompt = `User asked: "${userMessage}"\n\n`;
+  
+  if (!toolResult.success || products.length < 2) {
+    prompt += `I couldn't find enough products to compare. Apologize briefly and offer to help them search for specific products to compare.`;
+    return prompt;
+  }
+  
+  prompt += `=== PRODUCTS TO COMPARE ===\n\n`;
+
+  for (const [index, p] of products.entries()) {
+    prompt += `📦 PRODUCT ${index + 1}: ${p.name}\n`;
+    prompt += `   💰 Price: $${p.price}\n`;
+    prompt += `   📁 Category: ${p.category}\n`;
+    if (p.description) prompt += `   📝 ${p.description}\n`;
+    if (p.colors?.length) prompt += `   🎨 Colors: ${p.colors.join(', ')}\n`;
+    if (p.tags?.length) prompt += `   ✨ Features: ${p.tags.join(', ')}\n`;
+    if (p.rating) prompt += `   ⭐ Rating: ${p.rating}/5\n`;
+    prompt += `   📦 In Stock: ${p.inStock === false ? 'No' : 'Yes'}\n\n`;
+  }
+
+  const priceDiff = comparison.priceRange?.highest - comparison.priceRange?.lowest;
+  prompt += `=== ANALYSIS POINTS ===\n`;
+  prompt += `• Price Spread: $${comparison.priceRange?.lowest} - $${comparison.priceRange?.highest} (difference: $${priceDiff?.toFixed(2)})\n`;
+  if (comparison.commonTags?.length) {
+    prompt += `• Shared Features: ${comparison.commonTags.join(', ')}\n`;
+  }
+  prompt += `\n`;
+
+  prompt += `=== YOUR TASK ===\n`;
+  prompt += `Write an INTELLIGENT comparison that:\n`;
+  prompt += `1. Opens with a brief acknowledgment of what user wants to compare\n`;
+  prompt += `2. Highlights the KEY DIFFERENCES that matter (price, unique features, quality indicators)\n`;
+  prompt += `3. Identifies the BEST USE CASE for each product (who should buy which)\n`;
+  prompt += `4. Ends with a CLEAR RECOMMENDATION: "If [condition], go with [Product]. If [other condition], [Other Product] is better."\n\n`;
+  prompt += `STYLE: Conversational, helpful, like a knowledgeable friend. 4-6 sentences max. Use exact product names.`;
+
+  return prompt;
+}
+
+function getPromptConfigForAction({ action, tenantConfig, userMessage, toolResult }) {
+  if (action === 'recommend_outfit') {
+    return {
+      systemPrompt: buildGroundedSystemPrompt(tenantConfig, GROUNDED_OUTFIT_RULES),
+      userPrompt: buildOutfitPrompt(userMessage, toolResult, tenantConfig),
+      enforceVariety: false
+    };
+  }
+
+  if (action === 'recommend_products' || action === 'search_products') {
+    return {
+      systemPrompt: buildGroundedSystemPrompt(tenantConfig, GROUNDED_PRODUCTS_RULES),
+      userPrompt: buildProductsPrompt(userMessage, toolResult, tenantConfig),
+      enforceVariety: true
+    };
+  }
+
+  if (action === 'compare_products') {
+    return {
+      systemPrompt: buildGroundedSystemPrompt(tenantConfig, GROUNDED_COMPARISON_RULES),
+      userPrompt: buildComparisonPrompt(userMessage, toolResult),
+      enforceVariety: false
+    };
+  }
+
+  return null;
+}
+
+function handleDirectActionResponses(action, params, toolResult) {
+  switch (action) {
+    case 'add_to_cart':
+      return generateCartConfirmation(params, toolResult);
+    case 'add_outfit_to_cart':
+      return generateOutfitCartConfirmation(toolResult);
+    case 'view_cart':
+      return generateCartSummary(toolResult);
+    case 'checkout':
+      return generateCheckoutConfirmation(toolResult);
+    case 'view_orders':
+      return generateOrderListSummary(toolResult);
+    case 'get_order_status':
+      return generateOrderStatusSummary(toolResult);
+    case 'cancel_order':
+      return generateCancelOrderSummary(toolResult);
+    case 'compare_products':
+      return null; // Let LLM generate rich comparison response
+    default:
+      return null;
+  }
 }
 
 /**
@@ -648,6 +1191,45 @@ function generateCheckoutConfirmation(toolResult) {
 }
 
 /**
+ * Generate order list summary
+ */
+function generateOrderListSummary(toolResult) {
+  if (!toolResult.success || !toolResult.orders || toolResult.orders.length === 0) {
+    return "You don't have any orders yet. Would you like to start shopping?";
+  }
+
+  const orders = toolResult.orders;
+  const count = orders.length;
+  const latest = orders[0];
+  
+  return `I found ${count} order(s). Your most recent order is #${latest.orderId} (${latest.status}) for ₹${latest.summary?.totalAmount || latest.totalAmount}.`;
+}
+
+/**
+ * Generate order status summary
+ */
+function generateOrderStatusSummary(toolResult) {
+  if (!toolResult.success || !toolResult.order) {
+    return `I couldn't find that order. Please check the order ID and try again.`;
+  }
+
+  const order = toolResult.order;
+  return `Order #${order.orderId} is currently ${order.status}. It was placed on ${new Date(order.createdAt).toLocaleDateString()}.`;
+}
+
+/**
+ * Generate cancel order summary
+ */
+function generateCancelOrderSummary(toolResult) {
+  if (!toolResult.success) {
+    return `I couldn't cancel the order. ${toolResult.message || 'Please contact support.'}`;
+  }
+
+  const order = toolResult.order;
+  return `I've successfully cancelled order #${order.orderId}. You should receive a refund confirmation shortly if applicable.`;
+}
+
+/**
  * Generate fallback explanation when LLM call fails
  */
 function generateFallbackExplanation(action, toolResult) {
@@ -671,7 +1253,98 @@ function generateFallbackExplanation(action, toolResult) {
     }
   }
 
+  if (action === 'compare_products') {
+    const products = toolResult.items || [];
+    if (products.length >= 2) {
+      const names = products.map(p => p.name).join(' vs ');
+      const prices = products.map(p => `$${p.price}`).join(' / ');
+      return `Here's a comparison of ${names}. Prices: ${prices}. Check out the details above to make your choice!`;
+    }
+  }
+
   return `I've found some options that might interest you. Let me know if you'd like more details!`;
+}
+
+function ensureProductVarietyResponse(responseText = '', toolResult = {}) {
+  const products = (toolResult.items || toolResult.products || []).filter(Boolean);
+  if (products.length < 2) {
+    return responseText;
+  }
+
+  const productNames = products.map(p => p.name).filter(Boolean);
+  const minHighlights = Math.min(productNames.length, 3);
+  const mentioned = new Set();
+
+  for (const name of productNames) {
+    if (responseText.includes(name)) {
+      mentioned.add(name);
+    }
+  }
+
+  if (mentioned.size >= Math.min(minHighlights, 2)) {
+    return responseText;
+  }
+
+  const remaining = products.filter(p => !mentioned.has(p.name));
+  if (remaining.length === 0) {
+    return responseText;
+  }
+
+  const neededCount = Math.max(0, minHighlights - mentioned.size);
+  if (neededCount === 0) {
+    return responseText;
+  }
+
+  const highlights = remaining
+    .slice(0, neededCount)
+    .map(describeProductForDiversity)
+    .filter(Boolean);
+
+  if (highlights.length === 0) {
+    return responseText;
+  }
+
+  const connector = responseText.trim().endsWith('.') ? ' ' : '. ';
+  return `${responseText}${connector}Also check out ${formatList(highlights)}.`;
+}
+
+function describeProductForDiversity(product = {}) {
+  if (!product.name) {
+    return null;
+  }
+
+  const descriptors = [];
+  if (Array.isArray(product.colors) && product.colors.length > 0) {
+    descriptors.push(product.colors[0]);
+  }
+
+  if (Array.isArray(product.tags) && product.tags.length > 0) {
+    descriptors.push(product.tags[0]);
+  } else if (product.category) {
+    descriptors.push(product.category);
+  }
+
+  if (product.price) {
+    descriptors.push(`₹${product.price}`);
+  }
+
+  if (descriptors.length === 0) {
+    return product.name;
+  }
+
+  return `${product.name} (${descriptors.join(' · ')})`;
+}
+
+function formatList(items) {
+  if (items.length === 1) {
+    return items[0];
+  }
+  if (items.length === 2) {
+    return `${items[0]} and ${items[1]}`;
+  }
+  const allButLast = items.slice(0, -1).join(', ');
+  const last = items[items.length - 1];
+  return `${allButLast}, and ${last}`;
 }
 
 // ============================================================================
@@ -680,55 +1353,99 @@ function generateFallbackExplanation(action, toolResult) {
 
 /**
  * Build system prompt with tenant persona customization
+ * New multi-tenant e-commerce platform prompt structure
  */
-function buildSystemPrompt(tenantConfig) {
+function buildSystemPrompt(tenantConfig, profileSummary = '', recentProductsContext = '') {
   // Extract persona from tenant config
   const persona = tenantConfig?.persona || {};
   const brandVoice = persona.brandVoice || {};
   const toneRules = Array.isArray(brandVoice.rules) ? brandVoice.rules.join(' ') : '';
   const personaName = persona.name || 'SAAI';
-  const personaRole = persona.role || 'AI sales assistant';
+  const categoryType = tenantConfig?.categoryType || tenantConfig?.category || 'general';
 
-  // Build dynamic system content with ALL behavioral rules
+  // Build dynamic system content with world-class AI intelligence
   const systemContent = [
-    `You are ${personaName}, ${personaRole} for a fashion and lifestyle ecommerce app.`,
+    // Core Intelligence (NEW - Claude/ChatGPT-like behavior)
+    CORE_INTELLIGENCE,
     '',
-    // Critical behavioral rules first
+    
+    // Multi-tenant context
+    '=== MULTI-TENANT CONTEXT ===',
+    `You are operating as ${personaName} - a world-class AI assistant for this tenant.`,
+    'Each tenant has its own product catalog - NEVER reference products outside the active tenant.',
+    '',
+    
+    // Section 1: User Preferences (Dynamic Memory)
+    '=== USER PREFERENCES ===',
+    profileSummary || 'No preferences learned yet.',
+    '',
+    'Use preferences to personalize recommendations and understand context.',
+    '',
+    
+    // Section 2: Context (Recent Product Results)
+    '=== CONVERSATION CONTEXT ===',
+    recentProductsContext || 'No recent products shown.',
+    '',
+    'Use for references like "the first one", "the blue one", "similar to that".',
+    '',
+    
+    // Section 3: Greeting Behavior
     GREETING_BEHAVIOR_RULES,
     '',
+    
+    // Section 4: Universal Tool-First Logic
     TOOL_CALLING_RULES,
     '',
-    ANTI_HALLUCINATION_RULES,
+    TOOL_INSTRUCTIONS,
     '',
     TOOLS_FIRST_ENFORCEMENT,
     '',
-    // Tool definitions
-    TOOL_INSTRUCTIONS,
-    '',
-    // Additional rules
+    
+    // Section 5: Multi-Item Parsing
     MULTI_ITEM_PARSING_RULES,
     '',
+    
+    // Section 6: Checkout Behavior
     CHECKOUT_RULES,
     '',
+    
+    // Section 7: Anti-Hallucination
+    ANTI_HALLUCINATION_RULES,
+    '',
+    
+    // Section 8: Product Domain Adaptation
+    DOMAIN_ADAPTATION_RULES,
+    `Current tenant category: ${categoryType}`,
+    '',
+    
+    // Section 9: Tone & Brand Voice
     TONE_RULES,
+    brandVoice.tone ? `Tenant brand tone: ${brandVoice.tone}.` : '',
+    toneRules || '',
     '',
-    // UI context
-    'CRITICAL: The user already sees your introduction in the app UI.',
-    'DO NOT introduce yourself again or explain what you can do.',
-    'DO NOT say "How can I help you today?" as your first response to greetings.',
-    'Always answer the user\'s latest message directly and concisely.',
+    
+    // Section 10: Never Re-Introduce
+    '=== NEVER RE-INTRODUCE YOURSELF ===',
+    'The app already shows your intro.',
+    'Start every turn with a clear answer, not an introduction.',
     '',
-    // Business context
-    'Your job is to help users find and buy clothes, shoes, and accessories.',
-    'Prioritize:',
-    '- Understanding the occasion (eid, wedding, office, casual, travel, party)',
-    '- Suggesting complete outfits when appropriate (top, bottom, shoes)',
-    '- Explaining briefly WHY items work together (color, style, occasion fit)',
-    '- Being concise and sales-focused',
+    
+    // Section 11: Role of SAAI
+    '=== ROLE OF SAAI ===',
+    'You are NOT just a chatbot.',
+    'You are:',
+    '- A commerce expert',
+    '- A product specialist',
+    '- A conversational recommendation engine',
+    '- A cart & checkout automation layer',
+    '- An app automation agent',
     '',
-    // Brand voice customization
-    brandVoice.tone ? `Tone: ${brandVoice.tone}.` : '',
-    toneRules || ''
+    'Your top priorities:',
+    '- Understand the user\'s goal',
+    '- Find the most relevant products',
+    '- Reduce steps to purchase',
+    '- Increase conversion',
+    '- Make shopping effortless'
   ].filter(Boolean).join('\n');
 
   return systemContent;

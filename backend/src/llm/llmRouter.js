@@ -27,6 +27,66 @@ const providers = {
 const DEFAULT_PRIORITY = ['groq', 'openrouter', 'gemini', 'mistral', 'mock'];
 
 /**
+ * Parse tool calls that appear in text response
+ * 
+ * Sometimes LLMs output tool calls as text instead of using native tool calling.
+ * This function detects and parses various formats:
+ * - {"name":"tool","parameters":{...}}
+ * - /function=tool>{...}<function
+ * - <function_call>...</function_call>
+ * 
+ * @param {string} text - LLM text response to parse
+ * @returns {Object|null} Parsed tool call or null if not found
+ */
+function parseToolCallFromText(text) {
+  if (!text) return null;
+
+  // Pattern 1: JSON tool call format {"name":"...", "parameters":{...}}
+  const jsonPattern = /\{"name"\s*:\s*"([^"]+)"\s*,\s*"parameters"\s*:\s*(\{[^}]*\})\}/;
+  const jsonMatch = text.match(jsonPattern);
+  if (jsonMatch) {
+    try {
+      const name = jsonMatch[1];
+      const args = JSON.parse(jsonMatch[2]);
+      console.log(`[LLM Router] Parsed tool call from JSON format: ${name}`);
+      return { name, arguments: args };
+    } catch (e) {
+      console.warn('[LLM Router] Failed to parse JSON tool call:', e.message);
+    }
+  }
+
+  // Pattern 2: /function=name>{...}<function format
+  const functionPattern = /\/function=(\w+)>\s*(\{[^}]*\})\s*<function/;
+  const functionMatch = text.match(functionPattern);
+  if (functionMatch) {
+    try {
+      const name = functionMatch[1];
+      const args = JSON.parse(functionMatch[2]);
+      console.log(`[LLM Router] Parsed tool call from function format: ${name}`);
+      return { name, arguments: args };
+    } catch (e) {
+      console.warn('[LLM Router] Failed to parse function tool call:', e.message);
+    }
+  }
+
+  // Pattern 3: <function_call name="...">...</function_call>
+  const xmlPattern = /<function_call\s+name="([^"]+)">\s*(\{[^}]*\})\s*<\/function_call>/;
+  const xmlMatch = text.match(xmlPattern);
+  if (xmlMatch) {
+    try {
+      const name = xmlMatch[1];
+      const args = JSON.parse(xmlMatch[2]);
+      console.log(`[LLM Router] Parsed tool call from XML format: ${name}`);
+      return { name, arguments: args };
+    } catch (e) {
+      console.warn('[LLM Router] Failed to parse XML tool call:', e.message);
+    }
+  }
+
+  return null;
+}
+
+/**
  * Get provider priority order
  * @returns {string[]} Array of provider names in priority order
  */
@@ -133,6 +193,20 @@ async function runLLMWithTools({ messages, tenantConfig, actionRegistry }) {
           model: result.model,
           tool: result.toolCall,
           text: result.text || ''
+        };
+      }
+
+      // Check if the text response contains a tool call that wasn't properly parsed
+      // This happens when LLMs output tool calls as text instead of using native tool calling
+      const parsedToolCall = parseToolCallFromText(result.text);
+      if (parsedToolCall) {
+        console.log(`[LLM Router] Detected tool call in text response, converting to proper tool call`);
+        return {
+          decision: 'tool',
+          provider: result.provider,
+          model: result.model,
+          tool: parsedToolCall,
+          text: '' // Clear the text since it was actually a tool call
         };
       }
 

@@ -6,6 +6,11 @@
       "description": "Search products by query text",
       "handler": "commerce.search"
     },
+    "compare_products": {
+      "enabled": true,
+      "description": "Compare two or more products side by side, showing features, prices, and pros/cons",
+      "handler": "commerce.compareProducts"
+    },
     "add_to_cart": {
       "enabled": true,
       "description": "Add a single product to cart",
@@ -16,6 +21,11 @@
       "description": "Add a complete outfit (shirt + pant + shoes) to cart",
       "handler": "commerce.addOutfitToCart"
     },
+    "remove_from_cart": {
+      "enabled": true,
+      "description": "Remove a product from cart",
+      "handler": "commerce.removeFromCart"
+    },
     "checkout": {
       "enabled": true,
       "description": "Create an order from cart",
@@ -25,6 +35,21 @@
       "enabled": true,
       "description": "View current cart contents and summary",
       "handler": "commerce.viewCart"
+    },
+    "view_orders": {
+      "enabled": true,
+      "description": "View order history",
+      "handler": "commerce.viewOrders"
+    },
+    "get_order_status": {
+      "enabled": true,
+      "description": "Get status of a specific order",
+      "handler": "commerce.getOrderStatus"
+    },
+    "cancel_order": {
+      "enabled": true,
+      "description": "Cancel an existing order",
+      "handler": "commerce.cancelOrder"
     },
     "recommend_products": {
       "enabled": true,

@@ -20,6 +20,11 @@ const {
   addOutfitToCartEndpoint 
 } = require('./cart.controller');
 const { 
+  getOrdersEndpoint, 
+  getOrderStatusEndpoint, 
+  cancelOrderEndpoint 
+} = require('./order.controller');
+const { 
   getDebugLogs, 
   clearDebugLogs 
 } = require('./debug.controller');
@@ -137,6 +142,22 @@ router.get('/cart/:tenantId', getCart);
 router.post('/cart/:tenantId/add', addToCartEndpoint);
 router.post('/cart/:tenantId/add-outfit', addOutfitToCartEndpoint);
 router.post('/cart/:tenantId/checkout', checkoutCartEndpoint);
+
+/**
+ * Order endpoints (debug/prototype)
+ * GET /orders/:tenantId - View orders
+ * GET /orders/:tenantId/:orderId - Get order status
+ * POST /orders/:tenantId/:orderId/cancel - Cancel order
+ * 
+ * Query params for GET /orders:
+ * - session: Session ID (optional)
+ * 
+ * Body for POST /cancel:
+ * - reason: Cancellation reason (optional)
+ */
+router.get('/orders/:tenantId', getOrdersEndpoint);
+router.get('/orders/:tenantId/:orderId', getOrderStatusEndpoint);
+router.post('/orders/:tenantId/:orderId/cancel', cancelOrderEndpoint);
 
 /**
  * Debug endpoints

@@ -8,13 +8,37 @@
 const toolDefinitions = [
   {
     name: "search_products",
-    description: "Search products in the catalog by user query text. Use this when the user wants to find specific products or browse the catalog.",
+    description: "PRIMARY tool for finding products. Use when user says 'show me', 'find', 'I want', 'I need', 'looking for', or mentions a product type with price (e.g., 'shoes under $100'). Supports smart filtering by price, color, category automatically. ALWAYS use this first when user mentions ANY product with or without filters.",
     parameters: {
       type: "object",
       properties: {
         query: {
           type: "string",
-          description: "User search query for products (e.g. 'white shirt', 'formal shoes', 'blue jeans')."
+          description: "Full user search query INCLUDING price, color, category filters (e.g., 'blue running shoes under $150', 'formal shirts', 'electronics under $500'). Pass the complete user query."
+        }
+      },
+      required: ["query"]
+    }
+  },
+  {
+    name: "compare_products",
+    description: "Use ONLY when user explicitly wants to COMPARE multiple specific products. Trigger words: 'compare', 'vs', 'versus', 'which is better', 'difference between', 'help me choose between X and Y'. DO NOT use for general product searches.",
+    parameters: {
+      type: "object",
+      properties: {
+        productIds: {
+          type: "array",
+          description: "Array of product IDs to compare if known (e.g., ['p001', 'p002']).",
+          items: { type: "string" }
+        },
+        productNames: {
+          type: "array",
+          description: "Array of product names to compare (e.g., ['Running Shoes Pro', 'Smart Watch Elite']). Use when IDs are not known.",
+          items: { type: "string" }
+        },
+        query: {
+          type: "string",
+          description: "Original comparison query from user to help find relevant products (e.g., 'compare headphones and smartwatch')."
         }
       },
       required: ["query"]
@@ -22,7 +46,7 @@ const toolDefinitions = [
   },
   {
     name: "recommend_products",
-    description: "Recommend products based on user intent and preferences. Use this when the user asks for suggestions or recommendations.",
+    description: "Use ONLY when user asks for SUGGESTIONS or says 'recommend', 'suggest', 'what do you think', 'any ideas'. DO NOT use for searches like 'show me X' or 'I want X'.",
     parameters: {
       type: "object",
       properties: {
@@ -97,6 +121,61 @@ const toolDefinitions = [
         }
       },
       required: ["shirtId", "pantId", "shoeId"]
+    }
+  },
+  {
+    name: "remove_from_cart",
+    description: "Remove a product from the cart by its ID. Use this when the user wants to remove an item or delete something from their cart.",
+    parameters: {
+      type: "object",
+      properties: {
+        productId: {
+          type: "string",
+          description: "The product ID to remove (e.g. 'p101')."
+        }
+      },
+      required: ["productId"]
+    }
+  },
+  {
+    name: "view_orders",
+    description: "View the user's order history. Use this when the user asks to see their orders, check order history, or track their purchases.",
+    parameters: {
+      type: "object",
+      properties: {},
+      required: []
+    }
+  },
+  {
+    name: "get_order_status",
+    description: "Get the status of a specific order. Use this when the user asks about a specific order status or tracking.",
+    parameters: {
+      type: "object",
+      properties: {
+        orderId: {
+          type: "string",
+          description: "The order ID to check (e.g. 'ORD-1715432100')."
+        }
+      },
+      required: ["orderId"]
+    }
+  },
+  {
+    name: "cancel_order",
+    description: "Cancel a specific order. Use this when the user wants to cancel an order.",
+    parameters: {
+      type: "object",
+      properties: {
+        orderId: {
+          type: "string",
+          description: "The order ID to cancel."
+        },
+        reason: {
+          type: "string",
+          description: "Reason for cancellation (optional)."
+        }
+      },
+      required: ["orderId"]
     }
   },
   {

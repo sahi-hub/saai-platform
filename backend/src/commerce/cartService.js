@@ -7,6 +7,7 @@
 
 const { getCartRecord, saveCartRecord, clearCart } = require('./cartStore');
 const { loadProductsForTenant } = require('../utils/productLoader');
+const { createOrder } = require('./orderService');
 
 /**
  * Build cart summary (total items and amount)
@@ -279,6 +280,9 @@ async function checkoutCart({ tenantConfig, sessionId, paymentMethod = 'COD' }) 
     createdAt: new Date().toISOString()
   };
 
+  // Save order to order service
+  createOrder(order);
+
   // Clear cart after successful checkout (prototype behavior)
   clearCart(tenantId, sessionId);
 
@@ -293,9 +297,52 @@ async function checkoutCart({ tenantConfig, sessionId, paymentMethod = 'COD' }) 
   };
 }
 
+/**
+ * Remove a product from cart
+ * 
+ * @param {Object} options - Remove options
+ * @param {Object} options.tenantConfig - Tenant configuration
+ * @param {string} options.sessionId - Session identifier
+ * @param {string} options.productId - Product ID to remove
+ * @returns {Promise<Object>} Cart result
+ */
+async function removeFromCart({ tenantConfig, sessionId, productId }) {
+  const tenantId = tenantConfig?.tenantId || tenantConfig?.id || 'example';
+  const cart = getCartRecord(tenantId, sessionId);
+
+  console.log(`[cartService] Removing from cart: tenant=${tenantId}, product=${productId}`);
+
+  const initialCount = cart.items.length;
+  cart.items = cart.items.filter(item => item.productId !== productId);
+  
+  if (cart.items.length === initialCount) {
+    return {
+      type: 'cart',
+      success: false,
+      action: 'remove_from_cart',
+      message: `Product ${productId} was not found in your cart.`,
+      cart,
+      summary: buildCartSummary(cart)
+    };
+  }
+
+  saveCartRecord(tenantId, sessionId, cart);
+  const summary = buildCartSummary(cart);
+
+  return {
+    type: 'cart',
+    success: true,
+    action: 'remove_from_cart',
+    message: `Removed item from your cart. You have ${summary.totalItems} item(s) remaining.`,
+    cart,
+    summary
+  };
+}
+
 module.exports = {
   addToCart,
   addOutfitToCart,
+  removeFromCart,
   viewCart,
   checkoutCart,
   buildCartSummary

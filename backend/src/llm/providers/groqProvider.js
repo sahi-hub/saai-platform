@@ -8,7 +8,7 @@
 const Groq = require('groq-sdk');
 const { toOpenAIFormat } = require('../toolSchema');
 
-const MODEL = process.env.GROQ_MODEL || 'llama-3.1-8b-instant';
+const MODEL = process.env.GROQ_MODEL || 'openai/gpt-oss-120b';
 const MAX_TOKENS = 4096;
 const TEMPERATURE = 0.7;
 

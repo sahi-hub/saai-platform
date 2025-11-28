@@ -19,7 +19,11 @@ const fs = require('fs').promises;
 const { logToolExecution } = require('../utils/logger');
 const { recommendProducts } = require('../recommender/recommender');
 const { recommendOutfit } = require('../recommender/outfitRecommender');
-const { addToCart, addOutfitToCart, viewCart, checkoutCart } = require('../commerce/cartService');
+const { addToCart, addOutfitToCart, removeFromCart, viewCart, checkoutCart } = require('../commerce/cartService');
+const { getOrders, getOrderStatus, cancelOrder } = require('../commerce/orderService');
+const { saveSessionContext } = require('../personalization/sessionContextStore');
+const { updateProfileFromProducts } = require('../personalization/profileUpdater');
+const { loadProductsForTenant } = require('../utils/productLoader');
 
 /**
  * Custom error for action not found in registry
@@ -327,6 +331,12 @@ async function runAction({ tenantConfig, actionRegistry, action, params = {} }) 
           pantId: params?.pantId,
           shoeId: params?.shoeId
         });
+      } else if (functionName === 'removeFromCart') {
+        result = await removeFromCart({
+          tenantConfig,
+          sessionId,
+          productId: params?.productId
+        });
       } else if (functionName === 'viewCart') {
         result = await viewCart({
           tenantConfig,
@@ -338,8 +348,307 @@ async function runAction({ tenantConfig, actionRegistry, action, params = {} }) 
           sessionId,
           paymentMethod: params?.paymentMethod || 'COD'
         });
+      } else if (functionName === 'viewOrders') {
+        result = await getOrders({
+          tenantConfig,
+          sessionId
+        });
+      } else if (functionName === 'getOrderStatus') {
+        result = await getOrderStatus({
+          tenantConfig,
+          orderId: params?.orderId
+        });
+      } else if (functionName === 'cancelOrder') {
+        result = await cancelOrder({
+          tenantConfig,
+          orderId: params?.orderId,
+          reason: params?.reason
+        });
+      } else if (functionName === 'search') {
+        // Handle product search using actual product data
+        const query = params?.query || '';
+        const limit = params?.limit || 10;
+        
+        console.log(`[tools] Executing product search for query: "${query}"`);
+        
+        // Load products for tenant
+        const products = await loadProductsForTenant(tenantConfig.tenantId || tenantConfig.id || tenantId);
+        
+        // ===== SMART PRICE FILTERING =====
+        // Extract price constraints from query (e.g., "under $100", "below 50", "less than ₹5000")
+        const pricePatterns = [
+          /(?:under|below|less than|cheaper than|max|maximum|up to|within|budget)\s*[$₹€£]?\s*(\d+(?:,\d{3})*(?:\.\d{2})?)/i,
+          /[$₹€£]\s*(\d+(?:,\d{3})*(?:\.\d{2})?)\s*(?:or less|max|maximum|budget)/i,
+          /(\d+(?:,\d{3})*(?:\.\d{2})?)\s*(?:or less|and under|and below)/i
+        ];
+        
+        let maxPrice = null;
+        let minPrice = null;
+        
+        // Check for max price
+        for (const pattern of pricePatterns) {
+          const match = query.match(pattern);
+          if (match) {
+            maxPrice = parseFloat(match[1].replace(/,/g, ''));
+            console.log(`[tools] Detected max price filter: $${maxPrice}`);
+            break;
+          }
+        }
+        
+        // Check for min price patterns
+        const minPricePatterns = [
+          /(?:over|above|more than|at least|minimum|starting|from)\s*[$₹€£]?\s*(\d+(?:,\d{3})*(?:\.\d{2})?)/i,
+          /[$₹€£]\s*(\d+(?:,\d{3})*(?:\.\d{2})?)\s*(?:or more|minimum|and above|and up|\+)/i
+        ];
+        
+        for (const pattern of minPricePatterns) {
+          const match = query.match(pattern);
+          if (match) {
+            minPrice = parseFloat(match[1].replace(/,/g, ''));
+            console.log(`[tools] Detected min price filter: $${minPrice}`);
+            break;
+          }
+        }
+        
+        // Check for price range (e.g., "$50-100", "between 50 and 100")
+        const rangePatterns = [
+          /[$₹€£]?\s*(\d+(?:,\d{3})*(?:\.\d{2})?)\s*[-–to]+\s*[$₹€£]?\s*(\d+(?:,\d{3})*(?:\.\d{2})?)/i,
+          /between\s*[$₹€£]?\s*(\d+(?:,\d{3})*(?:\.\d{2})?)\s*and\s*[$₹€£]?\s*(\d+(?:,\d{3})*(?:\.\d{2})?)/i
+        ];
+        
+        for (const pattern of rangePatterns) {
+          const match = query.match(pattern);
+          if (match) {
+            minPrice = parseFloat(match[1].replace(/,/g, ''));
+            maxPrice = parseFloat(match[2].replace(/,/g, ''));
+            console.log(`[tools] Detected price range: $${minPrice} - $${maxPrice}`);
+            break;
+          }
+        }
+        
+        // ===== CATEGORY DETECTION =====
+        const categoryKeywords = {
+          electronics: ['electronics', 'electronic', 'gadget', 'tech', 'device'],
+          accessories: ['accessories', 'accessory', 'watch', 'jewelry', 'bag'],
+          beauty: ['beauty', 'cosmetic', 'skincare', 'makeup', 'fragrance', 'perfume'],
+          grocery: ['grocery', 'groceries', 'food', 'snack', 'beverage', 'drink'],
+          clothing: ['clothing', 'clothes', 'shirt', 'pant', 'dress', 'jacket', 'top', 'bottom', 'apparel', 'wear'],
+          fitness: ['fitness', 'gym', 'exercise', 'workout', 'sport', 'athletic'],
+          footwear: ['footwear', 'shoe', 'shoes', 'sneaker', 'boot', 'sandal', 'slipper'],
+          furniture: ['furniture', 'chair', 'table', 'desk', 'sofa', 'bed'],
+          home: ['home', 'kitchen', 'decor', 'appliance', 'household']
+        };
+        
+        const queryLower = query.toLowerCase();
+        let detectedCategory = null;
+        
+        for (const [category, keywords] of Object.entries(categoryKeywords)) {
+          if (keywords.some(kw => queryLower.includes(kw))) {
+            detectedCategory = category;
+            console.log(`[tools] Detected category filter: ${category}`);
+            break;
+          }
+        }
+        
+        // ===== COLOR DETECTION =====
+        const colorKeywords = ['red', 'blue', 'green', 'yellow', 'black', 'white', 'gray', 'grey', 'brown', 'pink', 'purple', 'orange', 'navy', 'beige', 'tan', 'silver', 'gold', 'rose', 'cream', 'maroon', 'teal', 'cyan'];
+        const detectedColors = colorKeywords.filter(color => queryLower.includes(color));
+        if (detectedColors.length > 0) {
+          console.log(`[tools] Detected color filters: ${detectedColors.join(', ')}`);
+        }
+        
+        // Simple search: filter products by name, description, category, or tags
+        const queryWords = queryLower.split(/\s+/).filter(w => w.length > 2);
+        
+        // Remove price-related words from search terms
+        const priceWords = ['under', 'below', 'above', 'over', 'less', 'more', 'than', 'budget', 'cheap', 'expensive', 'affordable', 'maximum', 'minimum'];
+        const filteredQueryWords = queryWords.filter(w => !priceWords.includes(w) && !/^\d+$/.test(w));
+        
+        // Create search variants (singular/plural forms) for better matching
+        const createWordVariants = (word) => {
+          const variants = [word];
+          // Handle common plural/singular conversions
+          if (word.endsWith('s') && word.length > 3) {
+            // Remove trailing 's' for singular form
+            variants.push(word.slice(0, -1));
+          }
+          if (word.endsWith('es') && word.length > 4) {
+            // Remove trailing 'es' for singular form
+            variants.push(word.slice(0, -2));
+          }
+          if (!word.endsWith('s')) {
+            // Add 's' for plural form
+            variants.push(word + 's');
+          }
+          return variants;
+        };
+        
+        const matchedProducts = products
+          // First, apply hard filters (price, category, color)
+          .filter(product => {
+            // Price filter
+            if (maxPrice !== null && product.price > maxPrice) return false;
+            if (minPrice !== null && product.price < minPrice) return false;
+            
+            // Category filter (if detected)
+            if (detectedCategory && product.category !== detectedCategory) return false;
+            
+            // Color filter (if detected)
+            if (detectedColors.length > 0) {
+              const productColors = (product.colors || []).map(c => c.toLowerCase());
+              const hasMatchingColor = detectedColors.some(color => 
+                productColors.some(pc => pc.includes(color) || color.includes(pc))
+              );
+              if (!hasMatchingColor) return false;
+            }
+            
+            return true;
+          })
+          .map(product => {
+            let score = 0;
+            const searchFields = [
+              product.name || '',
+              product.description || '',
+              product.category || '',
+              ...(product.tags || [])
+            ].join(' ').toLowerCase();
+            
+            // Count matching words (including variants)
+            for (const word of queryWords) {
+              const variants = createWordVariants(word);
+              for (const variant of variants) {
+                if (searchFields.includes(variant)) {
+                  score += 1;
+                  break; // Only count once per original word
+                }
+              }
+            }
+            // Bonus for exact phrase match
+            if (searchFields.includes(queryLower)) score += 2;
+            
+            // Bonus for price relevance (if price filter applied)
+            if (maxPrice !== null) {
+              // Give slight preference to items closer to budget (better value)
+              const priceRatio = product.price / maxPrice;
+              if (priceRatio >= 0.7 && priceRatio <= 1.0) score += 0.5;
+            }
+            
+            return { ...product, searchScore: score };
+          })
+          .filter(p => {
+            // If we have price/category/color filters, allow products even with 0 text score
+            const hasFilters = maxPrice !== null || minPrice !== null || detectedCategory || detectedColors.length > 0;
+            return hasFilters ? true : p.searchScore > 0;
+          })
+          .sort((a, b) => b.searchScore - a.searchScore)
+          .slice(0, limit)
+          .map(({ searchScore, ...product }) => product);
+        
+        // Build informative message
+        let filterInfo = [];
+        if (maxPrice !== null) filterInfo.push(`under $${maxPrice}`);
+        if (minPrice !== null) filterInfo.push(`over $${minPrice}`);
+        if (detectedCategory) filterInfo.push(`in ${detectedCategory}`);
+        if (detectedColors.length > 0) filterInfo.push(`in ${detectedColors.join('/')}`);
+        
+        const filterSuffix = filterInfo.length > 0 ? ` (${filterInfo.join(', ')})` : '';
+        
+        result = {
+          type: 'recommendations',
+          items: matchedProducts,
+          totalFound: matchedProducts.length,
+          filters: { maxPrice, minPrice, category: detectedCategory, colors: detectedColors },
+          message: matchedProducts.length > 0 
+            ? `Found ${matchedProducts.length} products${filterSuffix}`
+            : `No products found for "${query}"${filterSuffix}`
+        };
+      } else if (functionName === 'compareProducts') {
+        // Handle product comparison
+        const productIds = params?.productIds || [];
+        const productNames = params?.productNames || [];
+        
+        console.log(`[tools] Executing product comparison for:`, { productIds, productNames });
+        
+        // Load products for tenant
+        const products = await loadProductsForTenant(tenantConfig.tenantId || tenantConfig.id || tenantId);
+        
+        // Find products by ID or name
+        const productsToCompare = [];
+        
+        // First try to find by IDs
+        for (const id of productIds) {
+          const product = products.find(p => p.id === id);
+          if (product) productsToCompare.push(product);
+        }
+        
+        // Then try to find by names (fuzzy match)
+        for (const name of productNames) {
+          const nameLower = name.toLowerCase();
+          const product = products.find(p => 
+            p.name.toLowerCase().includes(nameLower) || 
+            nameLower.includes(p.name.toLowerCase())
+          );
+          if (product && !productsToCompare.some(p => p.id === product.id)) {
+            productsToCompare.push(product);
+          }
+        }
+        
+        // If we still don't have products, search by query terms
+        if (productsToCompare.length === 0 && params?.query) {
+          const queryLower = params.query.toLowerCase();
+          const matches = products.filter(p => 
+            p.name.toLowerCase().includes(queryLower) || 
+            p.description?.toLowerCase().includes(queryLower)
+          ).slice(0, 3);
+          productsToCompare.push(...matches);
+        }
+        
+        if (productsToCompare.length < 2) {
+          result = {
+            type: 'comparison',
+            items: productsToCompare,
+            success: false,
+            message: 'Please specify at least 2 products to compare. You can search for products first.'
+          };
+        } else {
+          // Build comparison data
+          const comparison = {
+            products: productsToCompare.map(p => ({
+              id: p.id,
+              name: p.name,
+              category: p.category,
+              price: p.price,
+              currency: p.currency || 'USD',
+              description: p.description,
+              tags: p.tags || [],
+              colors: p.colors || [],
+              sizes: p.sizes || [],
+              rating: p.rating || null,
+              inStock: p.inStock !== false
+            })),
+            // Generate comparison summary
+            priceRange: {
+              lowest: Math.min(...productsToCompare.map(p => p.price)),
+              highest: Math.max(...productsToCompare.map(p => p.price))
+            },
+            categories: [...new Set(productsToCompare.map(p => p.category))],
+            commonTags: productsToCompare.length > 0 
+              ? (productsToCompare[0].tags || []).filter(tag => 
+                  productsToCompare.every(p => (p.tags || []).includes(tag))
+                )
+              : []
+          };
+          
+          result = {
+            type: 'comparison',
+            items: productsToCompare,
+            comparison,
+            success: true,
+            message: `Comparing ${productsToCompare.length} products`
+          };
+        }
       } else {
-        // Fall through to adapter loading for other commerce functions (like search)
+        // Fall through to adapter loading for other commerce functions
         console.log(`[tools] Commerce function ${functionName} not handled directly, falling through to adapter`);
       }
 
