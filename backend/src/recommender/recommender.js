@@ -8,6 +8,119 @@ const { embedProduct, embedQuery } = require('./productEmbedding');
 const { computeSimilarity } = require('./similarity');
 
 /**
+ * Category penalty map: what categories to penalize for specific query intents
+ * Key = intent keywords found in query
+ * Value = array of categories to penalize
+ */
+const CATEGORY_PENALTIES = {
+  // Tech/office intents should penalize non-tech categories
+  'office': ['beauty', 'fitness', 'fashion', 'grocery', 'food', 'jewelry'],
+  'work': ['beauty', 'fitness', 'fashion', 'grocery', 'food', 'jewelry'],
+  'desk': ['beauty', 'fitness', 'fashion', 'grocery', 'food', 'jewelry', 'footwear'],
+  'computer': ['beauty', 'fitness', 'fashion', 'grocery', 'food', 'jewelry', 'footwear', 'clothing'],
+  'tech': ['beauty', 'fitness', 'fashion', 'grocery', 'food', 'jewelry'],
+  'laptop': ['beauty', 'fitness', 'fashion', 'grocery', 'food', 'jewelry', 'footwear'],
+  'monitor': ['beauty', 'fitness', 'fashion', 'grocery', 'food', 'jewelry', 'footwear'],
+  
+  // Fitness intents should focus on fitness gear
+  'workout': ['beauty', 'food', 'jewelry', 'furniture', 'home'],
+  'exercise': ['beauty', 'food', 'jewelry', 'furniture', 'home'],
+  'gym': ['beauty', 'food', 'jewelry', 'furniture', 'home'],
+  'yoga': ['beauty', 'food', 'jewelry', 'furniture', 'electronics'],
+  
+  // Beauty/skincare intents
+  'skincare': ['electronics', 'fitness', 'furniture', 'food'],
+  'makeup': ['electronics', 'fitness', 'furniture', 'food'],
+  'beauty': ['electronics', 'fitness', 'furniture'],
+  
+  // Fashion/clothing intents
+  'casual': ['electronics', 'furniture', 'grocery', 'beauty'],
+  'formal': ['electronics', 'fitness', 'grocery'],
+  'fashion': ['electronics', 'furniture', 'grocery']
+};
+
+/**
+ * Detect categories that should be penalized based on query intent
+ * @param {string} query - User's search query
+ * @returns {Set<string>} Categories to penalize
+ */
+function detectCategoryPenalties(query) {
+  const queryLower = query.toLowerCase();
+  const penalizedCategories = new Set();
+  
+  for (const [keyword, categories] of Object.entries(CATEGORY_PENALTIES)) {
+    if (queryLower.includes(keyword)) {
+      categories.forEach(cat => penalizedCategories.add(cat.toLowerCase()));
+    }
+  }
+  
+  return penalizedCategories;
+}
+
+/**
+ * Detect similar product clusters (products that serve same purpose)
+ * Used for deduplication
+ */
+const SIMILAR_PRODUCT_CLUSTERS = [
+  ['earbuds', 'headphones', 'earphones', 'airpods', 'headset'], // Audio devices
+  ['laptop', 'notebook', 'macbook', 'chromebook'], // Portable computers
+  ['smartwatch', 'smart watch', 'fitness tracker', 'fitness band'], // Wearables
+  ['phone', 'smartphone', 'iphone', 'android'], // Phones
+  ['tablet', 'ipad'], // Tablets
+  ['mouse', 'trackpad'], // Pointing devices
+];
+
+/**
+ * Get cluster ID for a product (0 = no cluster)
+ * @param {Object} product - Product object
+ * @returns {number} Cluster ID or 0 if no cluster
+ */
+function getProductClusterId(product) {
+  const searchText = [
+    product.name || '',
+    product.category || '',
+    ...(product.tags || [])
+  ].join(' ').toLowerCase();
+  
+  for (let i = 0; i < SIMILAR_PRODUCT_CLUSTERS.length; i++) {
+    const cluster = SIMILAR_PRODUCT_CLUSTERS[i];
+    for (const keyword of cluster) {
+      if (searchText.includes(keyword)) {
+        return i + 1; // Return 1-indexed cluster ID
+      }
+    }
+  }
+  
+  return 0; // No cluster
+}
+
+/**
+ * Deduplicate products by cluster - keep only highest scored product per cluster
+ * @param {Array<Object>} products - Sorted products with scores
+ * @returns {Array<Object>} Deduplicated products
+ */
+function deduplicateByClusters(products) {
+  const seenClusters = new Set();
+  const result = [];
+  
+  for (const product of products) {
+    const clusterId = getProductClusterId(product);
+    
+    if (clusterId === 0) {
+      // Not in any cluster, always include
+      result.push(product);
+    } else if (!seenClusters.has(clusterId)) {
+      // First product from this cluster, include it
+      seenClusters.add(clusterId);
+      result.push(product);
+    }
+    // Skip if cluster already represented
+  }
+  
+  return result;
+}
+
+/**
  * Recommend products based on query and preferences
  * @param {string} tenantId - Tenant identifier
  * @param {string} query - Search query string
@@ -19,8 +132,9 @@ async function recommendProducts(tenantId, query = '', preferences = [], options
   try {
     const {
       limit = 10,
-      minScore = 0.25, // Increased threshold for better relevance
-      includeScores = true
+      minScore = 0.1, // Lower threshold to include more relevant results
+      includeScores = true,
+      deduplicate = true // Enable cluster deduplication by default
     } = options;
     
     console.log(`🔍 Generating recommendations for tenant: ${tenantId}`);
@@ -37,6 +151,12 @@ async function recommendProducts(tenantId, query = '', preferences = [], options
     
     console.log(`✅ Loaded ${products.length} products for recommendation`);
     
+    // Detect category penalties based on query intent
+    const penalizedCategories = detectCategoryPenalties(query);
+    if (penalizedCategories.size > 0) {
+      console.log(`📊 Applying penalties to categories: [${[...penalizedCategories].join(', ')}]`);
+    }
+    
     // Build query vector
     const queryVec = embedQuery(query, preferences);
     const queryFeatures = Object.keys(queryVec);
@@ -52,10 +172,19 @@ async function recommendProducts(tenantId, query = '', preferences = [], options
     
     console.log(`🎯 Query vector has ${queryFeatures.length} features: [${queryFeatures.slice(0, 5).join(', ')}...]`);
     
-    // Embed all products and compute similarity
+    // Embed all products and compute similarity with category penalty
     const productsWithScores = products.map(product => {
       const productVec = embedProduct(product);
-      const score = computeSimilarity(queryVec, productVec);
+      let score = computeSimilarity(queryVec, productVec);
+      
+      // Apply category penalty if product is in a penalized category
+      const productCategory = (product.category || '').toLowerCase();
+      if (penalizedCategories.has(productCategory)) {
+        const penaltyFactor = 0.5; // Reduce score by 50%
+        const originalScore = score;
+        score = score * penaltyFactor;
+        console.log(`   Penalizing "${product.name}" (${productCategory}): ${originalScore.toFixed(3)} → ${score.toFixed(3)}`);
+      }
       
       return {
         ...product,
@@ -72,8 +201,13 @@ async function recommendProducts(tenantId, query = '', preferences = [], options
     // Sort by similarity score (descending)
     filtered.sort((a, b) => b.similarityScore - a.similarityScore);
     
+    // Apply cluster deduplication if enabled
+    let recommendations = deduplicate 
+      ? deduplicateByClusters(filtered)
+      : filtered;
+    
     // Take top N results
-    const recommendations = filtered.slice(0, limit);
+    recommendations = recommendations.slice(0, limit);
     
     console.log(`✅ Returning top ${recommendations.length} recommendations`);
     if (recommendations.length > 0) {

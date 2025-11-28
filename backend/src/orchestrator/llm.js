@@ -23,6 +23,7 @@ const { getOrCreateProfile } = require('../personalization/profileStore');
 const { updateProfileFromProducts, buildProfileSummary } = require('../personalization/profileUpdater');
 const { getSessionContext, saveSessionContext } = require('../personalization/sessionContextStore');
 const { buildRecentProductsContext } = require('../personalization/recentProductsFormatter');
+const { loadProductsForTenant } = require('../utils/productLoader');
 
 // ============================================================================
 // SYSTEM PROMPTS - World-Class AI Shopping Assistant
@@ -531,6 +532,96 @@ function extractProductNamesFromCompare(message) {
 function detectForcedTool(message) {
   const msgLower = message.toLowerCase().trim();
   
+  // ===== CHECKOUT PATTERNS - Force checkout (check before cart!) =====
+  const checkoutPatterns = [
+    /\bcheckout\b/i,
+    /\bcheck\s*out\b/i,
+    /\bbuy\s+(?:everything|all|items?)\s+(?:in\s+)?(?:my\s+)?cart\b/i,
+    /\bpurchase\s+(?:everything|all|items?)\s+(?:in\s+)?(?:my\s+)?cart\b/i,
+    /\bplace\s+(?:my\s+)?order\b/i,
+    /\bcomplete\s+(?:my\s+)?(?:order|purchase)\b/i,
+    /\bconfirm\s+(?:my\s+)?(?:order|purchase)\b/i,
+    /\bfinalize\s+(?:my\s+)?(?:order|purchase)\b/i,
+    /\bdeliver\s+(?:my\s+)?(?:cart|order|items?)\b/i,
+    /\bproceed\s+(?:to\s+)?(?:checkout|payment)\b/i,
+    /\bi(?:'m| am)\s+(?:ready\s+to|done|want\s+to)\s+(?:buy|checkout|purchase|pay)\b/i,
+    /\bready\s+to\s+(?:buy|checkout|purchase|pay)\b/i
+  ];
+  
+  for (const pattern of checkoutPatterns) {
+    if (pattern.test(msgLower)) {
+      console.log(`[detectForcedTool] Matched checkout pattern: ${pattern}`);
+      return {
+        name: 'checkout',
+        arguments: {}
+      };
+    }
+  }
+  
+  // ===== ADD TO CART PATTERNS - Force add_to_cart (check BEFORE view_cart!) =====
+  // Check for multi-item add patterns (comma/and separated)
+  const multiAddPatterns = [
+    /\b(?:add|put|include|throw in)\b.+\b(?:and|,).+\b(?:to\s+(?:my\s+)?cart|in\s+(?:my\s+)?cart)\b/i,
+    /\b(?:add|put|include)\b.+(?:,\s*.+)+\s+(?:to\s+(?:my\s+)?cart|in\s+(?:my\s+)?cart)\b/i
+  ];
+  
+  for (const pattern of multiAddPatterns) {
+    if (pattern.test(msgLower)) {
+      console.log(`[detectForcedTool] Matched multi-item add to cart pattern: ${pattern}`);
+      // Extract product names from the message
+      const productNames = extractMultipleProductNames(message);
+      console.log(`[detectForcedTool] Extracted product names:`, productNames);
+      return {
+        name: 'add_multiple_to_cart',
+        arguments: { 
+          productNames: productNames,
+          query: message
+        }
+      };
+    }
+  }
+  
+  // Single item add to cart
+  const addCartPatterns = [
+    /\b(?:add|put|include|throw in)\s+(?:the\s+)?(?:this|that|it)?\s*(?:.+?)\s+(?:to|in)\s+(?:my\s+)?cart\b/i,
+    /\b(?:add|put)\s+(?:it|this|that)\s+(?:to|in)\s+(?:my\s+)?cart\b/i,
+    /\bi(?:'ll| will)\s+(?:take|get|buy)\s+(?:the\s+)?(?:this|that|it)?\s*.+/i,
+    /\bi\s+want\s+(?:to\s+)?(?:add|buy|get)\s+(?:the\s+)?/i
+  ];
+  
+  for (const pattern of addCartPatterns) {
+    if (pattern.test(msgLower)) {
+      console.log(`[detectForcedTool] Matched add to cart pattern: ${pattern}`);
+      const productName = extractSingleProductName(message);
+      console.log(`[detectForcedTool] Extracted product name: "${productName}"`);
+      return {
+        name: 'add_to_cart',
+        arguments: { 
+          query: message,
+          productName: productName  // Will be resolved to productId later
+        }
+      };
+    }
+  }
+
+  // ===== VIEW CART PATTERNS - Force view_cart (AFTER add patterns!) =====
+  const viewCartPatterns = [
+    /\b(?:show|view|see|what(?:'s| is) in)\s+(?:my\s+)?cart\b/i,
+    /\bmy\s+cart\b/i,
+    /\bcart\s+(?:items?|contents?|summary)\b/i,
+    /\bwhat(?:'s| is| do i have)\s+in\s+(?:my\s+)?cart\b/i
+  ];
+  
+  for (const pattern of viewCartPatterns) {
+    if (pattern.test(msgLower)) {
+      console.log(`[detectForcedTool] Matched view cart pattern: ${pattern}`);
+      return {
+        name: 'view_cart',
+        arguments: {}
+      };
+    }
+  }
+  
   // ===== SEARCH PATTERNS - Force search_products =====
   // These patterns should ALWAYS use search, not recommend
   const searchPatterns = [
@@ -550,6 +641,30 @@ function detectForcedTool(message) {
       console.log(`[detectForcedTool] Matched search pattern: ${pattern}`);
       return {
         name: 'search_products',
+        arguments: { query: message }
+      };
+    }
+  }
+  
+  // ===== RECOMMENDATION PATTERNS - Force recommend_products =====
+  // These are general "suggest/recommend/need" queries without price constraints
+  const recommendPatterns = [
+    // Setup/essentials queries
+    /\b(?:need|looking for)\s+(?:a\s+)?[\w\s]+(?:setup|essentials?|equipment)\b/i,
+    /\brecommend\s+[\w\s]+(?:for|to)\b/i,
+    // "Help me find X" patterns
+    /\bhelp\s+me\s+find\s+[\w\s]+for\b/i,
+    // "What do I need for X" patterns  
+    /\bwhat\s+do\s+i\s+need\s+for\b/i,
+    // "Products for office/home" patterns
+    /\b(?:products?|items?)\s+for\s+(?:office|home|work|gym)\b/i
+  ];
+  
+  for (const pattern of recommendPatterns) {
+    if (pattern.test(msgLower)) {
+      console.log(`[detectForcedTool] Matched recommend pattern: ${pattern}`);
+      return {
+        name: 'recommend_products',
         arguments: { query: message }
       };
     }
@@ -602,8 +717,165 @@ function detectForcedTool(message) {
     }
   }
   
+  // ===== SIMILARITY PATTERNS - Force find_similar =====
+  const similarityPatterns = [
+    /\b(?:something|anything|products?)\s+(?:like|similar\s+to)\s+(?:the\s+)?(?:first|second|third|\d+(?:st|nd|rd|th)|that|this|last)\s+(?:one|product|item)?\b/i,
+    /\bsimilar\s+to\s+(?:the\s+)?(?:first|second|third|\d+(?:st|nd|rd|th)|that|this|last)\s+(?:one|product|item)?\b/i,
+    /\b(?:more|other)\s+(?:options?|products?|items?)\s+like\s+(?:the\s+)?(?:first|second|third|\d+(?:st|nd|rd|th)|that|this|last)\b/i,
+    /\bshow\s+(?:me\s+)?(?:more\s+)?(?:like|similar)\s+(?:the\s+)?(?:first|second|third|\d+(?:st|nd|rd|th))\b/i
+  ];
+  
+  for (const pattern of similarityPatterns) {
+    if (pattern.test(msgLower)) {
+      console.log(`[detectForcedTool] Matched similarity pattern: ${pattern}`);
+      // Extract the reference (first, second, third, etc.)
+      const refMatch = msgLower.match(/(?:first|second|third|fourth|fifth|\d+(?:st|nd|rd|th)|that|this|last)/);
+      const reference = refMatch ? refMatch[0] : 'first';
+      return {
+        name: 'find_similar',
+        arguments: { 
+          reference: reference,
+          query: message
+        }
+      };
+    }
+  }
+  
   // No forced tool - let LLM decide
   return null;
+}
+
+/**
+ * Extract multiple product names from a message like "Add X, Y, and Z to cart"
+ */
+function extractMultipleProductNames(message) {
+  // Remove "add ... to cart" wrapper
+  let cleaned = message
+    .replace(/^(?:add|put|include|throw in)\s+/i, '')
+    .replace(/\s+(?:to|in)\s+(?:my\s+)?cart.*$/i, '')
+    .trim();
+  
+  // Split by comma and/or "and"
+  const parts = cleaned.split(/\s*(?:,\s*(?:and\s+)?|(?:\s+and\s+))\s*/i);
+  
+  // Clean up each product name
+  return parts
+    .map(p => p.replace(/^(?:the|a|an|some)\s+/i, '').trim())
+    .filter(p => p.length > 0);
+}
+
+/**
+ * Extract a single product name from an add to cart message
+ */
+function extractSingleProductName(message) {
+  let cleaned = message
+    .replace(/^(?:add|put|include|throw in|i(?:'ll| will)\s+(?:take|get|buy)|i\s+want\s+(?:to\s+)?(?:add|buy|get))\s+/i, '')
+    .replace(/\s+(?:to|in)\s+(?:my\s+)?cart.*$/i, '')
+    .replace(/^(?:the|a|an|some)\s+/i, '')
+    .trim();
+  
+  return cleaned || null;
+}
+
+/**
+ * Resolve product names to product IDs using fuzzy matching
+ * @param {string} tenantId - Tenant identifier
+ * @param {string[]} productNames - Array of product names to resolve
+ * @returns {Promise<{resolved: Object[], unresolved: string[]}>} Resolved products and unresolved names
+ */
+async function resolveProductNamesToIds(tenantId, productNames) {
+  const products = await loadProductsForTenant(tenantId);
+  const resolved = [];
+  const unresolved = [];
+  
+  for (const name of productNames) {
+    const normalizedName = name.toLowerCase().trim();
+    
+    // Try exact match first
+    let match = products.find(p => 
+      p.name.toLowerCase() === normalizedName ||
+      p.id.toLowerCase() === normalizedName
+    );
+    
+    // Try partial match (product name contains search term)
+    if (!match) {
+      match = products.find(p => 
+        p.name.toLowerCase().includes(normalizedName) ||
+        normalizedName.includes(p.name.toLowerCase())
+      );
+    }
+    
+    // Try keyword matching (split name into words and match)
+    if (!match) {
+      const nameWords = normalizedName.split(/\s+/).filter(w => w.length > 2);
+      match = products.find(p => {
+        const productWords = p.name.toLowerCase().split(/\s+/);
+        const productTags = (p.tags || []).map(t => t.toLowerCase());
+        const allProductTerms = [...productWords, ...productTags];
+        return nameWords.some(word => 
+          allProductTerms.some(term => term.includes(word) || word.includes(term))
+        );
+      });
+    }
+    
+    if (match) {
+      resolved.push({ id: match.id, name: match.name, originalQuery: name });
+      console.log(`[resolveProductNames] Resolved "${name}" → ${match.id} (${match.name})`);
+    } else {
+      unresolved.push(name);
+      console.log(`[resolveProductNames] Could not resolve "${name}"`);
+    }
+  }
+  
+  return { resolved, unresolved };
+}
+
+/**
+ * Resolve ordinal reference (first, second, third) to product from session context
+ * @param {string} reference - Reference like "first", "second", "third"
+ * @param {Object} sessionContext - Session context with lastProducts
+ * @returns {Object|null} Resolved product or null
+ */
+function resolveOrdinalReference(reference, sessionContext) {
+  if (!sessionContext?.lastProducts || sessionContext.lastProducts.length === 0) {
+    return null;
+  }
+  
+  const refLower = reference.toLowerCase();
+  const ordinalMap = {
+    'first': 0, 'second': 1, 'third': 2, 'fourth': 3, 'fifth': 4,
+    '1st': 0, '2nd': 1, '3rd': 2, '4th': 3, '5th': 4,
+    'that': 0, 'this': 0, 'last': -1
+  };
+  
+  let index = ordinalMap[refLower];
+  
+  // Handle numeric references like "1st", "2nd"
+  if (index === undefined) {
+    const numMatch = refLower.match(/^(\d+)/);
+    if (numMatch) {
+      index = parseInt(numMatch[1], 10) - 1; // Convert to 0-indexed
+    }
+  }
+  
+  if (index === undefined || index === null) {
+    return null;
+  }
+  
+  // Handle 'last' reference
+  if (index === -1) {
+    index = sessionContext.lastProducts.length - 1;
+  }
+  
+  // Validate index bounds
+  if (index < 0 || index >= sessionContext.lastProducts.length) {
+    console.log(`[resolveOrdinalReference] Index ${index} out of bounds (${sessionContext.lastProducts.length} products)`);
+    return null;
+  }
+  
+  const product = sessionContext.lastProducts[index];
+  console.log(`[resolveOrdinalReference] Resolved "${reference}" → ${product.id} (${product.name})`);
+  return product;
 }
 
 // ============================================================================
@@ -649,6 +921,73 @@ async function runLLMOrchestrator({ tenantConfig, actionRegistry, userMessage, c
     const params = { ...forcedTool.arguments };
     if (sessionId) params.sessionId = sessionId;
     
+    // =========================================================================
+    // SPECIAL HANDLING: Multi-item cart - resolve product names to IDs
+    // =========================================================================
+    if (forcedTool.name === 'add_multiple_to_cart' && params.productNames) {
+      console.log(`[Orchestrator] Resolving ${params.productNames.length} product names to IDs`);
+      const { resolved, unresolved } = await resolveProductNamesToIds(tenantId, params.productNames);
+      
+      if (resolved.length === 0) {
+        return {
+          type: 'error',
+          error: `I couldn't find any products matching: ${params.productNames.join(', ')}. Please try with more specific product names.`,
+          groundedText: `I couldn't find any products matching: ${params.productNames.join(', ')}. Please try with more specific product names.`
+        };
+      }
+      
+      params.productIds = resolved.map(r => r.id);
+      delete params.productNames;
+      
+      if (unresolved.length > 0) {
+        console.log(`[Orchestrator] Could not resolve: ${unresolved.join(', ')}`);
+      }
+    }
+    
+    // =========================================================================
+    // SPECIAL HANDLING: Single item cart - resolve product name to ID
+    // =========================================================================
+    if (forcedTool.name === 'add_to_cart' && params.productName) {
+      console.log(`[Orchestrator] Resolving single product name: "${params.productName}"`);
+      const { resolved, unresolved } = await resolveProductNamesToIds(tenantId, [params.productName]);
+      
+      if (resolved.length === 0) {
+        return {
+          type: 'error',
+          error: `I couldn't find a product matching "${params.productName}". Please try with a more specific product name.`,
+          groundedText: `I couldn't find a product matching "${params.productName}". Please try with a more specific product name.`
+        };
+      }
+      
+      params.productId = resolved[0].id;
+      delete params.productName;
+      console.log(`[Orchestrator] Resolved to productId: ${params.productId}`);
+    }
+    
+    // =========================================================================
+    // SPECIAL HANDLING: Similarity search - resolve reference to product
+    // =========================================================================
+    let isSimilaritySearch = false;
+    if (forcedTool.name === 'find_similar' && params.reference) {
+      console.log(`[Orchestrator] Session context lastProducts:`, sessionContext?.lastProducts?.map(p => p.name));
+      const resolvedProduct = resolveOrdinalReference(params.reference, sessionContext);
+      
+      if (!resolvedProduct) {
+        return {
+          type: 'error',
+          error: `I couldn't find the product you're referring to. Please specify which product you'd like to see similar items for.`,
+          groundedText: `I couldn't find the product you're referring to. Please specify which product you'd like to see similar items for.`
+        };
+      }
+      
+      // Convert to recommend_products with the product name as query
+      params.query = resolvedProduct.name;
+      params.referenceProductId = resolvedProduct.id;
+      forcedTool.name = 'recommend_products';
+      isSimilaritySearch = true; // Don't overwrite context with similarity results
+      console.log(`[Orchestrator] Converted find_similar to recommend_products for: ${resolvedProduct.name}`);
+    }
+    
     let toolResult;
     try {
       toolResult = await runAction({
@@ -665,8 +1004,8 @@ async function runLLMOrchestrator({ tenantConfig, actionRegistry, userMessage, c
       };
     }
 
-    // Update session context with products
-    if (toolResult?.items || toolResult?.results) {
+    // Update session context with products (but not for similarity searches)
+    if (!isSimilaritySearch && (toolResult?.items || toolResult?.results)) {
       let products = toolResult.items || toolResult.results || [];
       
       // Handle outfit results where items is an object {shirt: {...}, pant: {...}, shoe: {...}}

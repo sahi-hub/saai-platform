@@ -20,6 +20,91 @@ const { updateProfileFromProducts, buildProfileSummary } = require('../personali
 const { getSessionContext, saveSessionContext } = require('../personalization/sessionContextStore');
 const { buildRecentProductsContext } = require('../personalization/recentProductsFormatter');
 const { detectForcedTool, isGreetingOnly, buildSystemPrompt } = require('./llm');
+const { loadProductsForTenant } = require('../utils/productLoader');
+
+/**
+ * Resolve product names to product IDs using fuzzy matching (streaming version)
+ */
+async function resolveProductNamesToIds(tenantId, productNames) {
+  const products = await loadProductsForTenant(tenantId);
+  const resolved = [];
+  const unresolved = [];
+  
+  for (const name of productNames) {
+    const normalizedName = name.toLowerCase().trim();
+    
+    let match = products.find(p => 
+      p.name.toLowerCase() === normalizedName ||
+      p.id.toLowerCase() === normalizedName
+    );
+    
+    if (!match) {
+      match = products.find(p => 
+        p.name.toLowerCase().includes(normalizedName) ||
+        normalizedName.includes(p.name.toLowerCase())
+      );
+    }
+    
+    if (!match) {
+      const nameWords = normalizedName.split(/\s+/).filter(w => w.length > 2);
+      match = products.find(p => {
+        const productWords = p.name.toLowerCase().split(/\s+/);
+        const productTags = (p.tags || []).map(t => t.toLowerCase());
+        const allProductTerms = [...productWords, ...productTags];
+        return nameWords.some(word => 
+          allProductTerms.some(term => term.includes(word) || word.includes(term))
+        );
+      });
+    }
+    
+    if (match) {
+      resolved.push({ id: match.id, name: match.name, originalQuery: name });
+    } else {
+      unresolved.push(name);
+    }
+  }
+  
+  return { resolved, unresolved };
+}
+
+/**
+ * Resolve ordinal reference (first, second, third) to product from session context
+ */
+function resolveOrdinalReference(reference, sessionContext) {
+  if (!sessionContext?.lastProducts || sessionContext.lastProducts.length === 0) {
+    return null;
+  }
+  
+  const refLower = reference.toLowerCase();
+  const ordinalMap = {
+    'first': 0, 'second': 1, 'third': 2, 'fourth': 3, 'fifth': 4,
+    '1st': 0, '2nd': 1, '3rd': 2, '4th': 3, '5th': 4,
+    'that': 0, 'this': 0, 'last': -1
+  };
+  
+  let index = ordinalMap[refLower];
+  
+  if (index === undefined) {
+    const numMatch = refLower.match(/^(\d+)/);
+    if (numMatch) {
+      index = Number.parseInt(numMatch[1], 10) - 1;
+    }
+  }
+  
+  if (index === undefined || index === null) {
+    return null;
+  }
+  
+  if (index === -1) {
+    index = sessionContext.lastProducts.length - 1;
+  }
+  
+  if (index < 0 || index >= sessionContext.lastProducts.length) {
+    return null;
+  }
+  
+  return sessionContext.lastProducts[index];
+}
 
 /**
  * Run the LLM orchestrator with streaming support
@@ -70,6 +155,45 @@ async function runLLMOrchestratorStreaming({
     if (forcedTool) {
       actionName = forcedTool.name;
       params = { ...forcedTool.arguments, sessionId };
+      
+      // =========================================================================
+      // SPECIAL HANDLING: Multi-item cart - resolve product names to IDs
+      // =========================================================================
+      if (actionName === 'add_multiple_to_cart' && params.productNames) {
+        const { resolved } = await resolveProductNamesToIds(tenantId, params.productNames);
+        
+        if (resolved.length === 0) {
+          await streamTextChunks(
+            `I couldn't find any products matching: ${params.productNames.join(', ')}. Please try with more specific product names.`,
+            onChunk
+          );
+          onComplete?.({ type: 'error' });
+          return;
+        }
+        
+        params.productIds = resolved.map(r => r.id);
+        delete params.productNames;
+      }
+      
+      // =========================================================================
+      // SPECIAL HANDLING: Similarity search - resolve reference to product
+      // =========================================================================
+      if (actionName === 'find_similar' && params.reference) {
+        const resolvedProduct = resolveOrdinalReference(params.reference, sessionContext);
+        
+        if (!resolvedProduct) {
+          await streamTextChunks(
+            `I couldn't find the product you're referring to. Please specify which product you'd like to see similar items for.`,
+            onChunk
+          );
+          onComplete?.({ type: 'error' });
+          return;
+        }
+        
+        params.query = resolvedProduct.name;
+        params.referenceProductId = resolvedProduct.id;
+        actionName = 'recommend_products';
+      }
       
       onTool?.(actionName, params);
       console.log(`[Orchestrator-Stream] Executing forced tool: ${actionName}`);
