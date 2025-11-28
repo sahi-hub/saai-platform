@@ -4,6 +4,7 @@ import React, { useState, useRef, useEffect, useCallback, ChangeEvent, KeyboardE
 import Image from 'next/image';
 import OrderListBubble from './OrderListBubble';
 import InlineProductGrid from './InlineProductGrid';
+import AssistantBubble from './AssistantBubble';
 import { useStreamingChat } from '../../hooks/useStreamingChat';
 
 const API_URL = process.env.NEXT_PUBLIC_SAAI_API || 'http://localhost:3001';
@@ -39,6 +40,32 @@ interface Product {
   description?: string;
 }
 
+interface CartItem {
+  productId: string;
+  quantity: number;
+  productSnapshot: Product;
+}
+
+interface CartSummary {
+  totalItems: number;
+  totalAmount: number;
+}
+
+interface ActionResult {
+  type?: string;
+  items?: Product[] | Record<string, Product>;
+  products?: Product[];
+  orders?: Order[];
+  // Cart-specific fields
+  addedItem?: Product;
+  addedItems?: Product[];
+  cartItems?: CartItem[];
+  summary?: CartSummary;
+  success?: boolean;
+  // Order-specific fields
+  order?: Order;
+}
+
 interface ChatMessage {
   id: string;
   role: 'user' | 'assistant';
@@ -46,7 +73,10 @@ interface ChatMessage {
   error?: boolean;
   imagePreview?: string;
   toolAction?: string;
-  toolResult?: { type?: string; items?: Product[] | Record<string, Product>; products?: Product[]; orders?: Order[] };
+  toolResult?: ActionResult;
+  // New fields for message routing
+  replyType?: 'message' | 'tool';
+  actionResult?: ActionResult;
 }
 
 interface ChatPaneProps {
@@ -204,11 +234,17 @@ export default function ChatPane({ tenant, sessionId, onHighlightProducts, onErr
   const [imagePreviewUrl, setImagePreviewUrl] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [streamingText, setStreamingText] = useState('');
+  const [recentProducts, setRecentProducts] = useState<Product[]>([]);
   
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   
   const { streamChat } = useStreamingChat();
+
+  // Save recent products for context reference resolution
+  const saveRecentProducts = useCallback((products: Product[]) => {
+    setRecentProducts(products);
+  }, []);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -288,6 +324,8 @@ export default function ChatPane({ tenant, sessionId, onHighlightProducts, onErr
           onProducts: (products, action) => {
             toolResult = { type: action === 'recommend_outfit' ? 'outfit' : 'recommendations', items: products };
             toolAction = action;
+            // Save products for context reference (e.g., "the second product")
+            saveRecentProducts(products);
             // Update message with products
             setMessages(prev => prev.map(msg => 
               msg.id === assistantId ? { ...msg, toolAction, toolResult } : msg
@@ -332,7 +370,7 @@ export default function ChatPane({ tenant, sessionId, onHighlightProducts, onErr
 
     setIsLoading(false);
     handleRemoveImage();
-  }, [input, imageFile, imagePreviewUrl, isLoading, tenant, sessionId, messages, onHighlightProducts, onError, handleRemoveImage, streamChat]);
+  }, [input, imageFile, imagePreviewUrl, isLoading, tenant, sessionId, messages, onHighlightProducts, onError, handleRemoveImage, streamChat, saveRecentProducts]);
 
   const handleKeyDown = useCallback((e: KeyboardEvent<HTMLInputElement>) => {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -418,6 +456,135 @@ export default function ChatPane({ tenant, sessionId, onHighlightProducts, onErr
     return shuffled.slice(0, 4);
   });
 
+  /**
+   * Render assistant message based on replyType and actionResult
+   * Handles: checkout, cart add (single/multi), cart view, similar products, product grid, text
+   */
+  const renderAssistantMessage = (msg: ChatMessage) => {
+    const toolResult = msg.toolResult || msg.actionResult;
+    const toolAction = msg.toolAction;
+    
+    // 1. Checkout / order confirmation
+    if (toolResult?.type === 'order' || toolAction === 'checkout') {
+      const order = toolResult?.order;
+      const total = toolResult?.summary?.totalAmount || 0;
+      if (order || toolResult?.success) {
+        return (
+          <AssistantBubble>
+            <span>🎉 <strong>Order Confirmed!</strong></span><br />
+            {order?.orderId && <span>Order ID: {order.orderId}<br /></span>}
+            {total > 0 && <span>Total: ${total}<br /></span>}
+            <span>Delivered to your saved address.</span>
+          </AssistantBubble>
+        );
+      }
+    }
+
+    // 2. Add multiple items to cart
+    if ((toolResult?.type === 'cart' || toolAction === 'add_multiple_to_cart') && 
+        toolResult?.addedItems && toolResult.addedItems.length > 1) {
+      return (
+        <AssistantBubble>
+          <span>🛒 <strong>Added to cart:</strong></span><br />
+          {toolResult.addedItems.map((p: Product) => (
+            <div key={p.id}>• {p.name}</div>
+          ))}
+          <br />
+          {toolResult.summary && <span>Total: ${toolResult.summary.totalAmount}</span>}
+        </AssistantBubble>
+      );
+    }
+
+    // 3. Add single item to cart
+    if ((toolResult?.type === 'cart' || toolAction === 'add_to_cart') && 
+        (toolResult?.addedItem || toolResult?.addedItems?.length === 1)) {
+      const p = toolResult.addedItem || toolResult.addedItems?.[0];
+      if (p) {
+        return (
+          <AssistantBubble>
+            🛒 Added <strong>{p.name}</strong> to your cart.
+          </AssistantBubble>
+        );
+      }
+    }
+
+    // 4. View cart
+    if (toolResult?.type === 'cart_view' || toolAction === 'view_cart') {
+      const cartItems = (toolResult?.cartItems || toolResult?.items) as CartItem[] | undefined;
+      if (Array.isArray(cartItems) && cartItems.length > 0) {
+        return (
+          <AssistantBubble>
+            <strong>Your Cart:</strong><br />
+            {cartItems.map((item) => (
+              <div key={item.productId}>
+                {item.productSnapshot?.name || item.productId} – ${item.productSnapshot?.price || 0}
+              </div>
+            ))}
+            <br />
+            {toolResult?.summary && <span>Total: ${toolResult.summary.totalAmount}</span>}
+          </AssistantBubble>
+        );
+      }
+      // Empty cart
+      return (
+        <AssistantBubble>
+          🛒 Your cart is empty. Start shopping!
+        </AssistantBubble>
+      );
+    }
+
+    // 5. View orders
+    if (toolAction === 'view_orders' && toolResult?.orders) {
+      return (
+        <div className="mt-3">
+          <OrderListBubble 
+            orders={toolResult.orders} 
+            onCancelOrder={(orderId) => handleSend(`Cancel order ${orderId}`)} 
+          />
+        </div>
+      );
+    }
+
+    // 6. Similar products (similarity search)
+    if (toolResult?.type === 'similar_products') {
+      const products = toolResult.products || getProductsArray(toolResult);
+      if (products.length > 0) {
+        saveRecentProducts(products);
+        return <InlineProductGrid products={products} onAddToCart={handleAddToCart} />;
+      }
+    }
+
+    // 7. Product recommendations / search / outfit
+    const products = getProductsArray(toolResult || {});
+    if (products.length > 0) {
+      saveRecentProducts(products);
+      return (
+        <>
+          {msg.text && (
+            <AssistantBubble>{msg.text}</AssistantBubble>
+          )}
+          <InlineProductGrid products={products} onAddToCart={handleAddToCart} />
+        </>
+      );
+    }
+
+    // 8. Default text response
+    if (msg.text) {
+      return (
+        <AssistantBubble>
+          {msg.text}
+        </AssistantBubble>
+      );
+    }
+
+    // Fallback
+    return (
+      <AssistantBubble>
+        I&apos;m here to help!
+      </AssistantBubble>
+    );
+  };
+
   return (
     <div className="flex flex-col h-full bg-[#191A1A] text-white relative">
       {/* Header */}
@@ -446,19 +613,14 @@ export default function ChatPane({ tenant, sessionId, onHighlightProducts, onErr
                         <Image src={msg.imagePreview} alt="Uploaded" width={180} height={135} className="object-cover" />
                       </div>
                     )}
-                    <div className={`rounded-2xl px-4 py-3 ${getMsgBubbleClass(msg)}`}>
-                      <p className={`text-[15px] leading-relaxed whitespace-pre-wrap ${msg.role === 'assistant' && !msg.error ? 'text-white/80' : ''}`}>
-                        {msg.text}
-                      </p>
-                    </div>
-                    
-                    {msg.role === 'assistant' && msg.toolAction === 'view_orders' && msg.toolResult && (
-                      <div className="mt-3">
-                        <OrderListBubble orders={msg.toolResult.orders || []} onCancelOrder={(orderId) => handleSend(`Cancel order ${orderId}`)} />
+                    {msg.role === 'user' ? (
+                      <div className={`rounded-2xl px-4 py-3 ${getMsgBubbleClass(msg)}`}>
+                        <p className="text-[15px] leading-relaxed whitespace-pre-wrap">
+                          {msg.text}
+                        </p>
                       </div>
-                    )}
-                    {msg.role === 'assistant' && msg.toolResult && getProductsArray(msg.toolResult).length > 0 && (
-                      <InlineProductGrid products={getProductsArray(msg.toolResult)} onAddToCart={handleAddToCart} />
+                    ) : (
+                      renderAssistantMessage(msg)
                     )}
                   </div>
                   {msg.role === 'user' && (
