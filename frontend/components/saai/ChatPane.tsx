@@ -299,22 +299,54 @@ export default function ChatPane({ tenant, sessionId, onHighlightProducts, onErr
   // Dynamic suggestion pool - randomly picks 4 on initial render
   const [suggestions] = useState<string[]>(() => {
     const allSuggestions = [
-      'Show me formal shirts',
-      'Running shoes under ₹5000',
-      'Casual outfit for weekend',
-      'Show my orders',
-      'Wireless headphones',
-      'Laptop accessories',
-      'Fitness equipment',
-      'Black t-shirts',
-      'Something for home office',
-      'Gift ideas under $50',
-      'Compare running shoes',
-      'What\'s trending?',
-      'Comfortable sneakers',
-      'Premium watches',
-      'Tech gadgets',
-      'Backpacks for travel'
+      // 1. General Shopping Experience (Cross-Category)
+      "I’m setting up my home office. What should I get?",
+      "Recommend something for fitness and home workouts.",
+      "I want a few healthy snacks for work.",
+      "Give me a small list of self-care essentials I can buy.",
+      "I need gift ideas under 2000.",
+
+      // 2. Intelligent Product Discovery
+      "Find me something for a weekend trip.",
+      "Show me products to upgrade my work desk.",
+      "I need something relaxing for sleep.",
+      "Recommend eco-friendly items you have.",
+      "I’m looking for premium items. What do you suggest?",
+
+      // 3. Electronics & Accessories (Clear Reasoning)
+      "Suggest accessories for my laptop.",
+      "I want wireless audio options.",
+      "Show me something useful for video calls.",
+      "Give me a compact desk tech setup.",
+      "Which items are good for productivity?",
+
+      // 4. Fitness / Health / Lifestyle
+      "Build me a basic home gym setup.",
+      "Recommend essentials for a morning workout routine.",
+      "I need something for muscle recovery.",
+      "Show me healthy daily essentials.",
+      "What should I buy for staying hydrated and active?",
+
+      // 5. Clothing / Footwear / Bundle Logic
+      "Make me a casual everyday outfit.",
+      "Suggest something for a comfortable travel day.",
+      "I want a simple, clean weekend look.",
+      "Give me a sporty outfit.",
+      "Change the shoes to something more comfortable.",
+
+      // 6. Beauty, Self-Care, Cosmetics
+      "Show me a simple skincare routine.",
+      "Recommend something for dry skin.",
+      "I want a small beauty gift.",
+      "Give me products for a self-care night at home.",
+      "Suggest essentials for daily grooming.",
+
+      // 7. Home, Kitchen, Furniture
+      "I’m furnishing a small living room. Suggest essentials.",
+      "Recommend something for clean air at home.",
+      "Show me your best coffee setup.",
+      "I want a modern workspace. What do I need?",
+      "Show me something for organizing my space."
     ];
     const shuffled = [...allSuggestions].sort(() => Math.random() - 0.5);
     return shuffled.slice(0, 4);
