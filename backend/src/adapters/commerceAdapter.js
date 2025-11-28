@@ -89,22 +89,27 @@ async function search(params, tenantConfig) {
   
   // ===== CATEGORY DETECTION =====
   const categoryKeywords = {
-    electronics: ['electronics', 'electronic', 'gadget', 'tech', 'device', 'headphone', 'speaker', 'camera'],
-    accessories: ['accessories', 'accessory', 'watch', 'jewelry', 'bag', 'belt', 'wallet'],
-    beauty: ['beauty', 'cosmetic', 'skincare', 'makeup', 'fragrance', 'perfume'],
+    electronics: ['electronics', 'electronic', 'gadget', 'tech', 'device', 'headphone', 'speaker', 'camera', 'audio', 'wireless', 'bluetooth', 'laptop', 'computer', 'phone', 'tablet', 'webcam', 'keyboard', 'mouse'],
+    accessories: ['accessories', 'accessory', 'watch', 'jewelry', 'bag', 'belt', 'wallet', 'backpack'],
+    beauty: ['beauty', 'cosmetic', 'skincare', 'makeup', 'fragrance', 'perfume', 'serum', 'cream', 'lotion'],
     grocery: ['grocery', 'groceries', 'food', 'snack', 'beverage', 'drink'],
-    clothing: ['clothing', 'clothes', 'shirt', 'pant', 'dress', 'jacket', 'top', 'bottom', 'apparel', 'wear', 't-shirt', 'tshirt'],
-    fitness: ['fitness', 'gym', 'exercise', 'workout', 'sport', 'athletic', 'yoga'],
-    footwear: ['footwear', 'shoe', 'shoes', 'sneaker', 'boot', 'sandal', 'slipper', 'loafer'],
-    furniture: ['furniture', 'chair', 'table', 'desk', 'sofa', 'bed'],
-    home: ['home', 'kitchen', 'decor', 'appliance', 'household']
+    clothing: ['clothing', 'clothes', 'shirt', 'pant', 'pants', 'dress', 'jacket', 'apparel', 'tshirt', 't-shirt', 'hoodie', 'jeans', 'shorts', 'skirt', 'blouse', 'sweater'],
+    fitness: ['fitness', 'gym', 'exercise', 'workout', 'sport', 'athletic', 'yoga', 'dumbbell', 'weights', 'resistance'],
+    footwear: ['footwear', 'shoe', 'shoes', 'sneaker', 'sneakers', 'boot', 'boots', 'sandal', 'sandals', 'slipper', 'loafer'],
+    furniture: ['furniture', 'chair', 'table', 'desk', 'sofa', 'bed', 'shelf', 'cabinet'],
+    home: ['kitchen', 'decor', 'appliance', 'household', 'lamp', 'purifier']
   };
   
   const queryLower = query.toLowerCase();
   let detectedCategory = null;
   
+  // Use word boundary matching to avoid partial matches (e.g., "laptop" matching "top")
   for (const [category, keywords] of Object.entries(categoryKeywords)) {
-    if (keywords.some(kw => queryLower.includes(kw))) {
+    const hasMatch = keywords.some(kw => {
+      const regex = new RegExp(`\\b${kw}\\b`, 'i');
+      return regex.test(queryLower);
+    });
+    if (hasMatch) {
       detectedCategory = category;
       console.log(`[commerceAdapter.search] Detected category filter: ${category}`);
       break;
@@ -118,10 +123,11 @@ async function search(params, tenantConfig) {
     console.log(`[commerceAdapter.search] Detected color filters: ${detectedColors.join(', ')}`);
   }
   
-  // Remove price-related words from search terms
+  // Remove price-related words and stop words from search terms
   const priceWords = ['under', 'below', 'above', 'over', 'less', 'more', 'than', 'budget', 'cheap', 'expensive', 'affordable', 'maximum', 'minimum', 'dollars', 'dollar', 'usd', 'rupees', 'inr'];
+  const stopWords = ['the', 'and', 'for', 'with', 'that', 'this', 'from', 'are', 'was', 'were', 'been', 'being', 'have', 'has', 'had', 'having', 'does', 'did', 'doing', 'will', 'would', 'could', 'should', 'may', 'might', 'must', 'can', 'need', 'want', 'looking', 'find', 'show', 'get', 'give', 'something', 'anything', 'some', 'any', 'good', 'best', 'great', 'nice', 'options', 'option', 'like', 'help', 'please'];
   const queryWords = queryLower.split(/\s+/).filter(w => w.length > 2);
-  const filteredQueryWords = queryWords.filter(w => !priceWords.includes(w) && !/^\$?\d+$/.test(w));
+  const filteredQueryWords = queryWords.filter(w => !priceWords.includes(w) && !stopWords.includes(w) && !/^\$?\d+$/.test(w));
   
   // Create search variants (singular/plural forms)
   const createWordVariants = (word) => {
@@ -192,8 +198,19 @@ async function search(params, tenantConfig) {
       return { ...product, searchScore: score };
     })
     .filter(p => {
+      // STRICT RELEVANCE: Always require SOME text match for quality results
       const hasFilters = maxPrice !== null || minPrice !== null || detectedCategory || detectedColors.length > 0;
-      return hasFilters ? true : p.searchScore > 0;
+      
+      // If we have explicit filters AND a text score, show the product
+      if (hasFilters && p.searchScore > 0) return true;
+      
+      // If we have explicit filters but no text match, only allow if query is very generic
+      if (hasFilters && detectedCategory && p.searchScore === 0) {
+        return filteredQueryWords.length <= 1; // Allow only if query is generic
+      }
+      
+      // For queries with no explicit filters, require text match
+      return p.searchScore > 0;
     })
     .sort((a, b) => b.searchScore - a.searchScore)
     .slice(0, limit)

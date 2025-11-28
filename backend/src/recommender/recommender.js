@@ -19,7 +19,7 @@ async function recommendProducts(tenantId, query = '', preferences = [], options
   try {
     const {
       limit = 10,
-      minScore = 0.1,
+      minScore = 0.25, // Increased threshold for better relevance
       includeScores = true
     } = options;
     

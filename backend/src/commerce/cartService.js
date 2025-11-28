@@ -200,6 +200,92 @@ async function addOutfitToCart({ tenantConfig, sessionId, shirtId, pantId, shoeI
 }
 
 /**
+ * Add multiple products to cart at once
+ * 
+ * @param {Object} options - Add options
+ * @param {Object} options.tenantConfig - Tenant configuration
+ * @param {string} options.sessionId - Session identifier
+ * @param {Array<string>} options.productIds - Array of product IDs to add
+ * @returns {Promise<Object>} Cart result with all added items
+ */
+async function addMultipleToCart({ tenantConfig, sessionId, productIds }) {
+  const tenantId = tenantConfig?.tenantId || tenantConfig?.id || 'example';
+  const cart = getCartRecord(tenantId, sessionId);
+
+  console.log(`[cartService] Adding multiple to cart: tenant=${tenantId}, products=${productIds.join(', ')}`);
+
+  // Load products
+  const products = await loadProductsForTenant(tenantId);
+  const productMap = new Map(products.map(p => [p.id, p]));
+
+  const addedItems = [];
+  const notFoundItems = [];
+
+  for (const productId of productIds) {
+    const product = productMap.get(productId);
+    
+    if (!product) {
+      notFoundItems.push(productId);
+      continue;
+    }
+
+    // Check if already in cart
+    const existing = cart.items.find(i => i.productId === productId);
+    if (existing) {
+      existing.quantity += 1;
+      console.log(`[cartService] Updated quantity for ${productId}: ${existing.quantity}`);
+    } else {
+      cart.items.push({
+        productId,
+        quantity: 1,
+        productSnapshot: {
+          id: product.id,
+          name: product.name,
+          price: product.price,
+          currency: product.currency || 'INR',
+          category: product.category,
+          imageUrl: product.imageUrl || product.image
+        }
+      });
+      console.log(`[cartService] Added ${productId} to cart`);
+    }
+
+    addedItems.push({
+      id: product.id,
+      name: product.name,
+      price: product.price
+    });
+  }
+
+  saveCartRecord(tenantId, sessionId, cart);
+  const summary = buildCartSummary(cart);
+
+  console.log(`[cartService] Multiple items added: ${addedItems.length} items, total: ${summary.totalAmount}`);
+
+  // Build response message
+  let message;
+  if (addedItems.length === 0) {
+    message = 'Could not find any of the specified products.';
+  } else if (notFoundItems.length > 0) {
+    message = `Added ${addedItems.length} item(s) to your cart. Could not find: ${notFoundItems.join(', ')}.`;
+  } else {
+    const names = addedItems.map(i => i.name).join(', ');
+    message = `Added ${addedItems.length} items to your cart: ${names}. Total: ₹${summary.totalAmount}.`;
+  }
+
+  return {
+    type: 'cart',
+    success: addedItems.length > 0,
+    action: 'add_multiple_to_cart',
+    message,
+    cart,
+    summary,
+    addedItems,
+    notFoundItems: notFoundItems.length > 0 ? notFoundItems : undefined
+  };
+}
+
+/**
  * View cart contents
  * 
  * @param {Object} options - View options
@@ -342,6 +428,7 @@ async function removeFromCart({ tenantConfig, sessionId, productId }) {
 module.exports = {
   addToCart,
   addOutfitToCart,
+  addMultipleToCart,
   removeFromCart,
   viewCart,
   checkoutCart,

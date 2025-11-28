@@ -102,6 +102,21 @@ const toolDefinitions = [
     }
   },
   {
+    name: "add_multiple_to_cart",
+    description: "Add MULTIPLE products to cart at once. Use this when user says 'add all', 'add these', 'add both', 'add all to cart', 'I want all of them', or wants to add more than one product. Extract product IDs from the previously shown/recommended products in the conversation.",
+    parameters: {
+      type: "object",
+      properties: {
+        productIds: {
+          type: "array",
+          description: "Array of product IDs to add (e.g., ['p011', 'p012', 'p022']). Extract from the products shown in the conversation.",
+          items: { type: "string" }
+        }
+      },
+      required: ["productIds"]
+    }
+  },
+  {
     name: "add_outfit_to_cart",
     description: "Add a complete outfit to cart. Use this when: (1) user says 'add this outfit', 'add these items', 'add the outfit', 'buy this look', or (2) you previously recommended an outfit and user wants to add it. Extract shirt, pant, and shoe IDs from the conversation history.",
     parameters: {

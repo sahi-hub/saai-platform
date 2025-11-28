@@ -11,6 +11,11 @@
       "description": "Add a product to cart",
       "handler": "commerce.addToCart"
     },
+    "add_multiple_to_cart": {
+      "enabled": true,
+      "description": "Add multiple products to cart at once",
+      "handler": "commerce.addMultipleToCart"
+    },
     "checkout": {
       "enabled": true,
       "description": "Create an order from cart",

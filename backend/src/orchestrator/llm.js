@@ -337,7 +337,25 @@ const GROUNDED_PRODUCTS_RULES = `CRITICAL RULES:
 3. Lead with the BEST match for their needs, explain why briefly
 4. For 2-3 products, give each a distinct reason (different use cases, price points, features)
 5. Sound like a knowledgeable friend making a recommendation, not reading a list
-6. End with a natural next step (ask if they want more details, suggest trying one, etc.)`;
+6. End with a natural next step (ask if they want more details, suggest trying one, etc.)
+
+CRITICAL: RELEVANCE FILTERING
+- Only mention products that are ACTUALLY RELEVANT to what the user asked for
+- If the results contain irrelevant items (e.g., clothing when they asked for electronics), DO NOT mention them
+- If no products match what the user wants, honestly say "We don't carry [X] at the moment" and ask if they'd like help with something else
+- NEVER try to redirect users to unrelated products just because they're in the results
+- Example: If user asks for "wireless headphones" and results show T-shirts, say "I don't see wireless headphones in our catalog. We mainly have clothing, accessories, and home items. Can I help you find something else?"`;
+
+const NO_PRODUCTS_RULES = `HANDLING EMPTY OR IRRELEVANT RESULTS:
+When the search/recommendation returns no relevant products:
+1. Be honest: "I don't see any [X] in our catalog right now"
+2. Briefly mention what categories ARE available
+3. Ask if they'd like help finding something else
+4. NEVER make up products or pretend to have items you don't
+
+Example responses:
+- "We don't seem to carry wireless audio equipment. We have a great selection of clothing, accessories, and home office items though—want me to help with any of those?"
+- "I couldn't find fitness equipment in our catalog. Our focus is on fashion and home goods. Anything else I can help you discover?"`;
 
 const GROUNDED_COMPARISON_RULES = `CRITICAL RULES:
 1. Compare ONLY the products provided - do not mention any others
@@ -967,6 +985,7 @@ function buildOutfitPrompt(userMessage, toolResult, tenantConfig) {
 function buildProductsPrompt(userMessage, toolResult, tenantConfig) {
   const products = toolResult.items || toolResult.products || [];
   const filters = toolResult.filters || {};
+  const userQuery = userMessage.toLowerCase();
   
   let prompt = `User asked: "${userMessage}"\n\n`;
   
@@ -982,7 +1001,31 @@ function buildProductsPrompt(userMessage, toolResult, tenantConfig) {
   }
   
   if (products.length === 0) {
-    prompt += `No products matched the criteria. Acknowledge this helpfully and suggest broadening the search or trying different terms.`;
+    prompt += `No products matched the search.\n\n`;
+    prompt += `=== YOUR RESPONSE ===\n`;
+    prompt += `Be honest and helpful:\n`;
+    prompt += `1. Acknowledge you don't have what they're looking for\n`;
+    prompt += `2. Briefly mention what categories you DO have (clothing, accessories, home, electronics, etc.)\n`;
+    prompt += `3. Ask if you can help find something else\n`;
+    prompt += `\nExample: "I don't see [X] in our catalog. We mainly carry [categories]. Can I help you find something else?"`;
+    return prompt;
+  }
+  
+  // Check if products are actually relevant to query
+  const relevanceKeywords = userQuery.split(/\s+/).filter(w => w.length > 3);
+  const hasRelevantProducts = products.some(p => {
+    const productText = `${p.name} ${p.description || ''} ${p.category} ${(p.tags || []).join(' ')}`.toLowerCase();
+    return relevanceKeywords.some(kw => productText.includes(kw));
+  });
+  
+  if (!hasRelevantProducts && products.length > 0) {
+    prompt += `⚠️ NOTE: The search returned products, but they may not match what the user is looking for.\n`;
+    prompt += `The user asked for "${userMessage}" but the products below may be unrelated.\n\n`;
+    prompt += `=== YOUR RESPONSE ===\n`;
+    prompt += `1. Be honest - tell the user you don't have exactly what they're looking for\n`;
+    prompt += `2. DO NOT try to sell them unrelated products\n`;
+    prompt += `3. Ask if they'd like help with something else you DO carry\n`;
+    prompt += `\nDO NOT mention any of the products below if they're not relevant to the user's query.`;
     return prompt;
   }
   
@@ -1092,6 +1135,8 @@ function handleDirectActionResponses(action, params, toolResult) {
   switch (action) {
     case 'add_to_cart':
       return generateCartConfirmation(params, toolResult);
+    case 'add_multiple_to_cart':
+      return generateMultipleCartConfirmation(toolResult);
     case 'add_outfit_to_cart':
       return generateOutfitCartConfirmation(toolResult);
     case 'view_cart':
@@ -1144,6 +1189,28 @@ function generateOutfitCartConfirmation(toolResult) {
   const total = summary.totalAmount || 0;
 
   return `🛒 I've added your complete outfit to the cart: ${itemNames}. Your cart total is now ₹${total}. Ready to checkout?`;
+}
+
+/**
+ * Generate multiple cart items confirmation message
+ */
+function generateMultipleCartConfirmation(toolResult) {
+  if (toolResult.success === false) {
+    return `I couldn't add those items to your cart. ${toolResult.message || 'Please try again.'}`;
+  }
+
+  const addedItems = toolResult.addedItems || [];
+  const summary = toolResult.summary || {};
+  
+  if (addedItems.length === 0) {
+    return `I couldn't find those items in our catalog. Please try again with specific product names or IDs.`;
+  }
+
+  const itemNames = addedItems.map(i => i.name).join(', ');
+  const total = summary.totalAmount || 0;
+  const count = addedItems.length;
+
+  return `🛒 Done! I've added ${count} items to your cart: ${itemNames}. Your cart total is now ₹${total}. Ready to checkout or want to keep shopping?`;
 }
 
 /**

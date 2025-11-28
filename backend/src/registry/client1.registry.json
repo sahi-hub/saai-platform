@@ -16,6 +16,11 @@
       "description": "Add a single product to cart",
       "handler": "commerce.addToCart"
     },
+    "add_multiple_to_cart": {
+      "enabled": true,
+      "description": "Add multiple products to cart at once",
+      "handler": "commerce.addMultipleToCart"
+    },
     "add_outfit_to_cart": {
       "enabled": true,
       "description": "Add a complete outfit (shirt + pant + shoes) to cart",
