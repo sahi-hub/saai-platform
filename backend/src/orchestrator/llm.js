@@ -1596,5 +1596,8 @@ module.exports = {
   buildSystemPrompt,
   buildGroundedSystemPrompt,
   getProviderStatus,
-  healthCheck
+  healthCheck,
+  // Export for streaming orchestrator
+  detectForcedTool,
+  isGreetingOnly
 };

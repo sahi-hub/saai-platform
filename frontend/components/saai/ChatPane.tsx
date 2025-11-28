@@ -4,8 +4,12 @@ import React, { useState, useRef, useEffect, useCallback, ChangeEvent, KeyboardE
 import Image from 'next/image';
 import OrderListBubble from './OrderListBubble';
 import InlineProductGrid from './InlineProductGrid';
+import { useStreamingChat } from '../../hooks/useStreamingChat';
 
 const API_URL = process.env.NEXT_PUBLIC_SAAI_API || 'http://localhost:3001';
+
+// Enable streaming mode (can be toggled via env var)
+const USE_STREAMING = process.env.NEXT_PUBLIC_USE_STREAMING !== 'false';
 
 interface OrderItem {
   productId: string;
@@ -199,13 +203,16 @@ export default function ChatPane({ tenant, sessionId, onHighlightProducts, onErr
   const [imageFile, setImageFile] = useState<File | null>(null);
   const [imagePreviewUrl, setImagePreviewUrl] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
+  const [streamingText, setStreamingText] = useState('');
   
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  
+  const { streamChat } = useStreamingChat();
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages, isLoading]);
+  }, [messages, isLoading, streamingText]);
 
   const handleImageSelect = useCallback((e: ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -249,24 +256,83 @@ export default function ChatPane({ tenant, sessionId, onHighlightProducts, onErr
       try { imageBase64 = await fileToBase64(imageFile); } catch (err) { console.error(err); }
     }
 
-    const endpoint = imageBase64 ? `${API_URL}/assistant/query` : `${API_URL}/chat`;
-    // Note: /chat expects 'tenant', /assistant/query expects 'tenantId'
-    const body = imageBase64 
-      ? { tenantId: tenant, sessionId, message: userText || null, imageBase64, history }
-      : { tenant, sessionId, message: userText || null, history };
+    // Use streaming for text-only requests, fallback for image requests
+    if (!imageBase64 && USE_STREAMING) {
+      // Streaming mode
+      let accumulatedText = '';
+      let toolResult: { type?: string; items?: Product[] | Record<string, Product>; products?: Product[] } | undefined;
+      let toolAction: string | undefined;
+      
+      setStreamingText('');
+      
+      // Add placeholder assistant message
+      const assistantId = `${id}-assistant`;
+      setMessages(prev => [...prev, {
+        id: assistantId, role: 'assistant', text: '', toolAction: undefined, toolResult: undefined
+      }]);
 
-    try {
-      const data = await sendChatRequest(endpoint, body);
-      handleApiResponse(data, id, endpoint, onHighlightProducts, onError, setMessages);
-    } catch (err) {
-      console.error(err);
-      setMessages(prev => [...prev, { id: `${id}-err`, role: 'assistant', text: 'Network error. Please try again.', error: true }]);
-      onError?.('Network error');
+      await streamChat(
+        { tenant, sessionId, message: userText, history },
+        {
+          onChunk: (text) => {
+            accumulatedText += text;
+            setStreamingText(accumulatedText);
+            // Update the message in real-time
+            setMessages(prev => prev.map(msg => 
+              msg.id === assistantId ? { ...msg, text: accumulatedText } : msg
+            ));
+          },
+          onTool: (name) => {
+            toolAction = name;
+          },
+          onProducts: (products, action) => {
+            toolResult = { type: action === 'recommend_outfit' ? 'outfit' : 'recommendations', items: products };
+            toolAction = action;
+            // Update message with products
+            setMessages(prev => prev.map(msg => 
+              msg.id === assistantId ? { ...msg, toolAction, toolResult } : msg
+            ));
+            // Highlight products
+            const productIds = products.map(p => p.id);
+            if (onHighlightProducts && productIds.length > 0) {
+              onHighlightProducts(productIds);
+            }
+          },
+          onComplete: () => {
+            // Final update with all data
+            setMessages(prev => prev.map(msg => 
+              msg.id === assistantId ? { ...msg, text: accumulatedText, toolAction, toolResult } : msg
+            ));
+            setStreamingText('');
+          },
+          onError: (error) => {
+            setMessages(prev => prev.map(msg => 
+              msg.id === assistantId ? { ...msg, text: error || 'Something went wrong.', error: true } : msg
+            ));
+            onError?.(error);
+          }
+        }
+      );
+    } else {
+      // Non-streaming mode (for image requests or when streaming is disabled)
+      const endpoint = imageBase64 ? `${API_URL}/assistant/query` : `${API_URL}/chat`;
+      const body = imageBase64 
+        ? { tenantId: tenant, sessionId, message: userText || null, imageBase64, history }
+        : { tenant, sessionId, message: userText || null, history };
+
+      try {
+        const data = await sendChatRequest(endpoint, body);
+        handleApiResponse(data, id, endpoint, onHighlightProducts, onError, setMessages);
+      } catch (err) {
+        console.error(err);
+        setMessages(prev => [...prev, { id: `${id}-err`, role: 'assistant', text: 'Network error. Please try again.', error: true }]);
+        onError?.('Network error');
+      }
     }
 
     setIsLoading(false);
     handleRemoveImage();
-  }, [input, imageFile, imagePreviewUrl, isLoading, tenant, sessionId, messages, onHighlightProducts, onError, handleRemoveImage]);
+  }, [input, imageFile, imagePreviewUrl, isLoading, tenant, sessionId, messages, onHighlightProducts, onError, handleRemoveImage, streamChat]);
 
   const handleKeyDown = useCallback((e: KeyboardEvent<HTMLInputElement>) => {
     if (e.key === 'Enter' && !e.shiftKey) {

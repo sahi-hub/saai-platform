@@ -1,5 +1,6 @@
 const express = require('express');
 const { handleChat } = require('./chat.controller');
+const { handleChatStream } = require('./chat.stream.controller');
 const { handleAssistantQuery } = require('./assistant.controller');
 const { getTenantInfo } = require('./tenant.controller');
 const { 
@@ -45,6 +46,15 @@ const router = express.Router();
  * Will be extended with tenant loader, orchestrator, memory, and adapters
  */
 router.post('/chat', handleChat);
+
+/**
+ * Streaming Chat endpoint
+ * POST /chat/stream
+ * 
+ * Handles streaming chat requests using Server-Sent Events (SSE)
+ * Provides real-time response streaming for better UX
+ */
+router.post('/chat/stream', handleChatStream);
 
 /**
  * Assistant query endpoint
