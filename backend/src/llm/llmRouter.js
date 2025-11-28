@@ -4,31 +4,36 @@
  * Routes requests to LLM providers with fallback support.
  * Supports both tool-calling and plain text modes.
  * 
- * Provider priority (optimized by speed test 2025-11-28):
- *   GROQ (335ms) → GEMINI (1296ms) → OPENROUTER (5041ms) → MOCK
+ * Provider priority (optimized by speed test 2025-01-XX):
+ *   GROQ (319ms) → GEMINI (823ms) → OR-GEMMA (1585ms) → OPENROUTER (2413ms) 
+ *   → OR-GPTOSS (2597ms) → OR-LLAMA (3747ms) → MOCK
  * 
  * (Can be overridden via LLM_PRIORITY env var)
  */
 
 const groqProvider = require('./providers/groqProvider');
 const openRouterProvider = require('./providers/openRouterProvider');
+const openRouterGptOssProvider = require('./providers/openRouterGptOssProvider');
+const openRouterGemmaProvider = require('./providers/openRouterGemmaProvider');
+const openRouterLlamaProvider = require('./providers/openRouterLlamaProvider');
 const geminiProvider = require('./providers/geminiProvider');
-const mistralProvider = require('./providers/mistralProvider');
 const mockProvider = require('./providers/mockProvider');
 
 // Provider mapping
+// Note: Multiple OpenRouter providers with different free models
 const providers = {
   groq: groqProvider,
-  openrouter: openRouterProvider,
+  openrouter: openRouterProvider,           // x-ai/grok-4.1-fast:free
+  or_gptoss: openRouterGptOssProvider,      // openai/gpt-oss-20b:free
+  or_gemma: openRouterGemmaProvider,        // google/gemma-3-27b-it:free
+  or_llama: openRouterLlamaProvider,        // meta-llama/llama-3.3-70b-instruct:free
   gemini: geminiProvider,
-  mistral: mistralProvider,
   mock: mockProvider
 };
 
 // Default provider order (optimized by speed test: fastest first)
-// GROQ: 335ms avg | Gemini: 1296ms avg | OpenRouter: 5041ms avg
-// Note: Mistral excluded due to auth issues - can re-enable if API key fixed
-const DEFAULT_PRIORITY = ['groq', 'gemini', 'openrouter', 'mock'];
+// GROQ: 319ms | Gemini: 823ms | OR-Gemma: 1585ms | OpenRouter: 2413ms | OR-GptOss: 2597ms | OR-Llama: 3747ms
+const DEFAULT_PRIORITY = ['groq', 'gemini', 'or_gemma', 'openrouter', 'or_gptoss', 'or_llama', 'mock'];
 
 /**
  * Parse tool calls that appear in text response
