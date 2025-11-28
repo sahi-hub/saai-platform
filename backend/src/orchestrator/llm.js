@@ -667,11 +667,19 @@ async function runLLMOrchestrator({ tenantConfig, actionRegistry, userMessage, c
 
     // Update session context with products
     if (toolResult?.items || toolResult?.results) {
-      const products = toolResult.items || toolResult.results || [];
-      saveSessionContext(tenantId, sessionId, {
-        lastProducts: products,
-        lastMatchedProductIds: products.slice(0, 5).map(p => p.id)
-      });
+      let products = toolResult.items || toolResult.results || [];
+      
+      // Handle outfit results where items is an object {shirt: {...}, pant: {...}, shoe: {...}}
+      if (products && typeof products === 'object' && !Array.isArray(products)) {
+        products = Object.values(products).filter(p => p && p.id);
+      }
+      
+      if (Array.isArray(products) && products.length > 0) {
+        saveSessionContext(tenantId, sessionId, {
+          lastProducts: products,
+          lastMatchedProductIds: products.slice(0, 5).map(p => p.id)
+        });
+      }
     }
     
     // Run Stage 2 - Generate grounded explanation
@@ -983,7 +991,13 @@ function buildOutfitPrompt(userMessage, toolResult, tenantConfig) {
  * Build prompt for products explanation
  */
 function buildProductsPrompt(userMessage, toolResult, tenantConfig) {
-  const products = toolResult.items || toolResult.products || [];
+  let products = toolResult.items || toolResult.products || [];
+  
+  // Handle outfit results where items is an object {shirt: {...}, pant: {...}, shoe: {...}}
+  if (products && typeof products === 'object' && !Array.isArray(products)) {
+    products = Object.values(products).filter(p => p && p.id);
+  }
+  
   const filters = toolResult.filters || {};
   const userQuery = userMessage.toLowerCase();
   
@@ -1313,8 +1327,12 @@ function generateFallbackExplanation(action, toolResult) {
   }
 
   if (action === 'recommend_products' || action === 'search_products') {
-    const products = toolResult.items || toolResult.products || [];
-    if (products.length > 0) {
+    let products = toolResult.items || toolResult.products || [];
+    // Handle object format (outfit-like) just in case
+    if (products && typeof products === 'object' && !Array.isArray(products)) {
+      products = Object.values(products).filter(p => p && p.id);
+    }
+    if (Array.isArray(products) && products.length > 0) {
       const topNames = products.slice(0, 3).map(p => p.name);
       return `I found some great options for you including ${topNames.join(', ')}. Take a look!`;
     }

@@ -296,12 +296,29 @@ export default function ChatPane({ tenant, sessionId, onHighlightProducts, onErr
   const canSend = (input.trim() || imageFile) && !isLoading;
   const hasStarted = messages.length > 0;
 
-  const suggestions = [
-    'Show me formal shirts',
-    'Running shoes under ₹5000',
-    'Casual outfit for weekend',
-    'Show my orders'
-  ];
+  // Dynamic suggestion pool - randomly picks 4 on initial render
+  const [suggestions] = useState<string[]>(() => {
+    const allSuggestions = [
+      'Show me formal shirts',
+      'Running shoes under ₹5000',
+      'Casual outfit for weekend',
+      'Show my orders',
+      'Wireless headphones',
+      'Laptop accessories',
+      'Fitness equipment',
+      'Black t-shirts',
+      'Something for home office',
+      'Gift ideas under $50',
+      'Compare running shoes',
+      'What\'s trending?',
+      'Comfortable sneakers',
+      'Premium watches',
+      'Tech gadgets',
+      'Backpacks for travel'
+    ];
+    const shuffled = [...allSuggestions].sort(() => Math.random() - 0.5);
+    return shuffled.slice(0, 4);
+  });
 
   return (
     <div className="flex flex-col h-full bg-[#191A1A] text-white relative">
