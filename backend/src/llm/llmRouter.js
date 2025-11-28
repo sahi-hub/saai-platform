@@ -4,7 +4,9 @@
  * Routes requests to LLM providers with fallback support.
  * Supports both tool-calling and plain text modes.
  * 
- * Provider priority: GROQ → GEMINI → MISTRAL → MOCK
+ * Provider priority (optimized by speed test 2025-11-28):
+ *   GROQ (335ms) → GEMINI (1296ms) → OPENROUTER (5041ms) → MOCK
+ * 
  * (Can be overridden via LLM_PRIORITY env var)
  */
 
@@ -23,8 +25,10 @@ const providers = {
   mock: mockProvider
 };
 
-// Default provider order (can be overridden by LLM_PRIORITY env var)
-const DEFAULT_PRIORITY = ['groq', 'openrouter', 'gemini', 'mistral', 'mock'];
+// Default provider order (optimized by speed test: fastest first)
+// GROQ: 335ms avg | Gemini: 1296ms avg | OpenRouter: 5041ms avg
+// Note: Mistral excluded due to auth issues - can re-enable if API key fixed
+const DEFAULT_PRIORITY = ['groq', 'gemini', 'openrouter', 'mock'];
 
 /**
  * Parse tool calls that appear in text response
