@@ -38,6 +38,9 @@ interface Product {
   category: string;
   imageUrl?: string;
   description?: string;
+  currency?: string;
+  rating?: number;
+  inStock?: boolean;
 }
 
 interface CartItem {
@@ -77,6 +80,7 @@ interface ChatMessage {
   // New fields for message routing
   replyType?: 'message' | 'tool';
   actionResult?: ActionResult;
+  llm?: LlmResponse;
 }
 
 interface ChatPaneProps {
@@ -554,7 +558,36 @@ export default function ChatPane({ tenant, sessionId, onHighlightProducts, onErr
       }
     }
 
-    // 7. Product recommendations / search / outfit
+    // 7. Generic product recommendations from backend (actionResult.items)
+    if (
+      msg.replyType === 'tool' &&
+      msg.actionResult?.type === 'recommendations' &&
+      msg.actionResult.items &&
+      Array.isArray(msg.actionResult.items) &&
+      msg.actionResult.items.length > 0
+    ) {
+      const products = msg.actionResult.items.map((p: Product) => ({
+        id: p.id,
+        name: p.name,
+        price: p.price,
+        currency: p.currency,
+        imageUrl: p.imageUrl,
+        rating: p.rating,
+        inStock: p.inStock,
+        category: p.category
+      }));
+      saveRecentProducts(products);
+      return (
+        <>
+          {msg.llm?.groundedText && (
+            <AssistantBubble>{msg.llm.groundedText}</AssistantBubble>
+          )}
+          <InlineProductGrid products={products} onAddToCart={handleAddToCart} />
+        </>
+      );
+    }
+
+    // 8. Product recommendations / search / outfit
     const products = getProductsArray(toolResult || {});
     if (products.length > 0) {
       saveRecentProducts(products);
